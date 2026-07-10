@@ -1,0 +1,59 @@
+{{ 'quote-widget.css' | asset_url | stylesheet_tag }}
+<script src="{{ 'quote-countries.js' | asset_url }}" defer="defer"></script>
+<script src="{{ 'quote-phone-codes.js' | asset_url }}" defer="defer"></script>
+<script src="{{ 'quote-address-rules.js' | asset_url }}" defer="defer"></script>
+<script src="{{ 'quote-widget.js' | asset_url }}" defer="defer"></script>
+
+{% capture customer_display_name %}
+  {%- if customer.name != blank -%}
+    {{- customer.name -}}
+  {%- elsif customer.first_name != blank or customer.last_name != blank -%}
+    {{- customer.first_name -}} {{- customer.last_name -}}
+  {%- elsif customer.email != blank -%}
+    {{- customer.email -}}
+  {%- endif -%}
+{% endcapture %}
+
+{% capture customer_address %}
+  {%- if customer.default_address.address1 != blank -%}
+    {{- customer.default_address.address1 -}}
+  {%- endif -%}
+  {%- if customer.default_address.city != blank -%}
+    {%- if customer.default_address.address1 != blank -%}, {% endif -%}
+    {{- customer.default_address.city -}}
+  {%- endif -%}
+  {%- if customer.default_address.country != blank -%}
+    {%- if customer.default_address.address1 != blank or customer.default_address.city != blank -%}, {% endif -%}
+    {{- customer.default_address.country -}}
+  {%- endif -%}
+{% endcapture %}
+
+<div
+  id="sp-rfq-root"
+  data-shop="{{ shop.permanent_domain }}"
+  data-customer-id="{{ customer.id }}"
+  data-customer-name="{{ customer_display_name | strip | escape }}"
+  data-customer-email="{{ customer.email | escape }}"
+  data-customer-phone="{{ customer.phone | default: customer.default_address.phone | escape }}"
+  data-customer-country="{{ customer.default_address.country | default: localization.country.name | escape }}"
+  data-customer-region="{{ customer.default_address.province | escape }}"
+  data-customer-address="{{ customer_address | strip | escape }}"
+  data-currency="{{ cart.currency.iso_code | default: shop.currency }}"
+  data-proxy-path="/apps/request-a-quote"
+  data-button-label="{{ block.settings.button_label | escape }}"
+></div>
+
+{% schema %}
+{
+  "name": "Request a Quote widget",
+  "target": "body",
+  "settings": [
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Floating button label",
+      "default": "Get Quote"
+    }
+  ]
+}
+{% endschema %}

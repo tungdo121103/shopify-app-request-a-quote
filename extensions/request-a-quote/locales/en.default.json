@@ -1,0 +1,6 @@
+{
+  "request_a_quote": {
+    "name": "Request a Quote",
+    "description": "Add quote buttons, quote cart, history, and negotiation to the storefront."
+  }
+}

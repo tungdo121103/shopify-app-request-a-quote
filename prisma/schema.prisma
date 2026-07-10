@@ -1,0 +1,170 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+enum QuoteStatus {
+  REQUESTED_BY_CUSTOMER
+  NEGOTIATING
+  OFFERED_BY_MERCHANT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CONVERTED_TO_ORDER
+}
+
+enum MessageSender {
+  CUSTOMER
+  MANAGER
+}
+
+model Quote {
+  id            String        @id @default(cuid())
+  quoteNumber   String
+  shop          String
+  customerId    String?
+  customerName  String?
+  customerEmail String?
+  customerPhone String?
+  customerCountry String?
+  customerRegion String?
+  customerAddress String?
+  currency      String        @default("USD")
+  status        QuoteStatus   @default(REQUESTED_BY_CUSTOMER)
+  note          String?
+  originalTotal Decimal       @default(0)
+  quoteTotal    Decimal       @default(0)
+  expiresAt     DateTime?
+  reminderSentAt DateTime?
+  orderId       String?
+  orderName     String?
+  orderInvoiceUrl String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  items         QuoteItem[]
+  messages      ConversationMessage[]
+  attachments   QuoteAttachment[]
+
+  @@index([shop, status])
+  @@index([shop, customerId])
+  @@unique([shop, quoteNumber])
+}
+
+model QuoteItem {
+  id              String   @id @default(cuid())
+  quoteId         String
+  productId       String?
+  variantId       String?
+  title           String
+  imageUrl        String?
+  sku             String?
+  quantity        Int      @default(1)
+  unitPrice       Decimal
+  quotePrice      Decimal
+  inventoryStatus String?
+  quote           Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+}
+
+model ConversationMessage {
+  id          String            @id @default(cuid())
+  quoteId     String
+  sender      MessageSender
+  senderName  String?
+  message     String
+  createdAt   DateTime          @default(now())
+  quote       Quote             @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  attachments QuoteAttachment[]
+
+  @@index([quoteId, createdAt])
+}
+
+model QuoteAttachment {
+  id        String               @id @default(cuid())
+  quoteId   String
+  messageId String?
+  fileName  String
+  fileUrl   String
+  mimeType  String?
+  createdAt DateTime             @default(now())
+  quote     Quote                @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  message   ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([quoteId])
+  @@index([messageId])
+}
+
+model QuoteSetting {
+  id                         String   @id @default(cuid())
+  shop                       String   @unique
+  requesterScope             String   @default("SELECTED")
+  allowCustomersNoPurchase   Boolean  @default(true)
+  allowRepeatCustomers       Boolean  @default(false)
+  allowAbandonedCheckout     Boolean  @default(false)
+  allowEmailSubscribers      Boolean  @default(false)
+  allowPurchasedCustomers    Boolean  @default(false)
+  selectedCustomerQuery      String?
+  emailPatterns              String?
+  productEligibility         String   @default("ALL")
+  selectedProductResources   String?
+  allowedProductResources    String?
+  excludedProductResources   String?
+  quoteExpiresAfterDays      Int      @default(7)
+  reminderBeforeExpireDays   Int      @default(3)
+  widgetStyle                String   @default("text")
+  widgetButtonText           String   @default("Get Quote")
+  widgetSize                 String   @default("medium")
+  widgetOrientation          String   @default("horizontal")
+  widgetDesktopPosition      String   @default("middle_left")
+  widgetMobilePosition       String   @default("bottom_right")
+  widgetDisplayMode          String   @default("all")
+  widgetSpecificPages        String?
+  widgetBackgroundColor      String   @default("#120670")
+  widgetTextColor            String   @default("#ffffff")
+  widgetAnimation            String   @default("pulse")
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+}
+
+model ShopCounter {
+  id        String   @id @default(cuid())
+  shop      String
+  key       String
+  value     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, key])
+  @@index([shop])
+}

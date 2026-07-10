@@ -1,0 +1,1 @@
+-- SQLite stores Prisma enums as TEXT, so adding EXPIRED only changes the Prisma schema/client.

@@ -1,0 +1,30 @@
+{{ 'quote-widget.css' | asset_url | stylesheet_tag }}
+<script src="{{ 'quote-widget.js' | asset_url }}" defer="defer"></script>
+
+<button
+  class="sp-rfq-add"
+  type="button"
+  data-rfq-add
+  data-product-id="{{ product.id }}"
+  data-variant-id="{{ product.selected_or_first_available_variant.id }}"
+  data-title="{{ product.title | escape }}"
+  data-price="{{ product.selected_or_first_available_variant.price | divided_by: 100.0 }}"
+  data-image="{{ product.featured_image | image_url: width: 160 }}"
+>
+  {{ block.settings.label }}
+</button>
+
+{% schema %}
+{
+  "name": "Add to Quote",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "label",
+      "label": "Button label",
+      "default": "Add to Quote"
+    }
+  ]
+}
+{% endschema %}
