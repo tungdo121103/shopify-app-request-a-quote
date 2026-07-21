@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 
 import { runQuoteExpirationJobs } from "~/models/quote.server";
+import { processQuoteEmailDeliveries } from "~/models/quote-email.server";
 import { authenticate } from "~/shopify.server";
 
 const json = (data: unknown, init?: ResponseInit) =>
@@ -22,8 +23,9 @@ async function runJob(request: Request) {
     quoteId,
     includeReminders: true,
   });
+  const emailResult = await processQuoteEmailDeliveries();
 
-  return json({ ok: true, ...result });
+  return json({ ok: true, ...result, email: emailResult });
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => runJob(request);

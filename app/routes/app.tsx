@@ -23,6 +23,7 @@ export default function App() {
         <s-link href="/app/widget">Widget</s-link>
         <s-link href="/app/email">Email templates</s-link>
         <s-link href="/app/pdf">PDF templates</s-link>
+        <s-link href="/app/privacy">Privacy requests</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

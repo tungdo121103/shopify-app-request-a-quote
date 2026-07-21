@@ -8,7 +8,18 @@ import {
   updateQuoteStatus,
 } from "~/models/quote.server";
 import { getQuoteSettings } from "~/models/quote-setting.server";
+import { getQuotePdfSetting } from "~/models/quote-pdf-setting.server";
+import {
+  getEmailBranding,
+  queueQuoteNotification,
+  verifyQuotePortalToken,
+} from "~/models/quote-email.server";
+import { createQuotePdf } from "~/lib/quote-pdf.server";
 import { authenticate } from "~/shopify.server";
+import {
+  requestActorHash,
+  requestIpHash,
+} from "~/lib/request-identity.server";
 
 const json = (data: unknown, init?: ResponseInit) =>
   new Response(JSON.stringify(data), {
@@ -128,8 +139,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     const settings = await getQuoteSettings(shop);
     const response = await context.admin.graphql(
       `#graphql
-        query SearchQuoteProducts($query: String!) {
-          products(first: 8, query: $query, sortKey: TITLE) {
+        query SearchQuoteProducts($query: String!, $first: Int!) {
+          products(first: $first, query: $query, sortKey: TITLE) {
             nodes {
               id
               title
@@ -156,7 +167,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         }`,
       {
         variables: {
-          query: search ? `${search} status:active` : "status:active",
+          query: search
+            ? `${search} status:active published_status:published`
+            : "status:active published_status:published",
+          first: 20,
         },
       },
     );
@@ -213,22 +227,53 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     return json({ products });
   }
 
+  if (/^quotes\/[^/]+\/pdf$/.test(path)) {
+    const quoteId = path.split("/")[1];
+    const quote = await getQuote(shop, quoteId);
+    if (!quote) return json({ error: "Quote not found" }, { status: 404 });
+    const portalToken = url.searchParams.get("portalToken") ?? "";
+    if (portalToken && !verifyQuotePortalToken(portalToken, shop, quoteId)) {
+      return json({ error: "Invalid quote link" }, { status: 403 });
+    }
+    const accessError = await authorizeQuoteCustomer({
+      admin: context.admin,
+      customerId,
+      quote,
+    });
+    if (accessError) return accessError;
+
+    const [settings, branding] = await Promise.all([
+      getQuotePdfSetting(shop),
+      getEmailBranding(shop),
+    ]);
+    const pdf = await createQuotePdf(quote, settings, {
+      logoUrl: branding.logoUrl,
+      storeName: branding.senderName || shop.replace(/\.myshopify\.com$/i, ""),
+    });
+    const fileName = `${quote.quoteNumber.replace(/[^a-z0-9_-]+/gi, "-")}.pdf`;
+    return new Response(pdf, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="${fileName}"`,
+        "Cache-Control": "private, no-store",
+      },
+    });
+  }
+
   if (path.startsWith("quotes/")) {
     const quoteId = path.split("/")[1];
     const quote = await getQuote(shop, quoteId);
     if (!quote) return json({ error: "Quote not found" }, { status: 404 });
-    const canAccessByEmail =
-      customerEmail &&
-      quote.customerEmail &&
-      quote.customerEmail.toLowerCase() === customerEmail.toLowerCase();
-    if (
-      customerId &&
-      quote.customerId &&
-      quote.customerId !== customerId &&
-      !canAccessByEmail
-    ) {
-      return json({ error: "Forbidden" }, { status: 403 });
+    const portalToken = url.searchParams.get("portalToken") ?? "";
+    if (portalToken && !verifyQuotePortalToken(portalToken, shop, quoteId)) {
+      return json({ error: "Invalid quote link" }, { status: 403 });
     }
+    const accessError = await authorizeQuoteCustomer({
+      admin: context.admin,
+      customerId,
+      quote,
+    });
+    if (accessError) return accessError;
     if (customerId) {
       await markQuoteRead({
         shop,
@@ -244,6 +289,32 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const quotes = await listCustomerQuotes(shop, customerId ?? "", customerEmail);
   return json({ quotes });
 };
+
+function quoteToEmailContext(
+  quote: Exclude<Awaited<ReturnType<typeof getQuote>>, null>,
+) {
+  return {
+    id: quote.id,
+    quoteNumber: quote.quoteNumber,
+    customerName: quote.customerName || "Customer",
+    customerEmail: quote.customerEmail ?? null,
+    quoteTotal: quote.quoteTotal,
+    originalTotal: quote.originalTotal,
+    currency: quote.currency,
+    status: String(quote.status),
+    note: quote.note ?? null,
+    expiresAt: quote.expiresAt ? String(quote.expiresAt) : null,
+    items: quote.items.map((item) => ({
+      title: item.title,
+      quantity: item.quantity,
+      quotePrice: item.quotePrice,
+      unitPrice: item.unitPrice,
+      imageUrl: item.imageUrl ?? undefined,
+      sku: item.sku ?? undefined,
+      variantTitle: item.variantTitle ?? undefined,
+    })),
+  };
+}
 
 export const action = async (args: ActionFunctionArgs) => {
   try {
@@ -274,56 +345,91 @@ async function handleStorefrontAction({ request, params }: ActionFunctionArgs) {
 
   if (path.endsWith("/messages")) {
     const quoteId = path.split("/")[1];
-    await addMessage({
-      quoteId,
-      shop,
-      sender: "CUSTOMER",
-      senderName: String(body.customerName ?? "Customer"),
-      message: String(body.message ?? ""),
-      attachments: normalizeAttachments(body.attachments ?? body.attachment),
+    const quote = await getQuote(shop, quoteId);
+    if (!quote) return json({ error: "Quote not found" }, { status: 404 });
+    const customerId = url.searchParams.get("logged_in_customer_id");
+    const accessError = await authorizeQuoteCustomer({
+      admin: context.admin,
+      customerId,
+      quote,
     });
-    return json({ ok: true });
+    if (accessError) return accessError;
+
+    try {
+      const message = await addMessage({
+        quoteId,
+        shop,
+        sender: "CUSTOMER",
+        senderName: String(body.customerName ?? "Customer"),
+        message: String(body.message ?? ""),
+        clientMessageId: String(body.clientMessageId ?? ""),
+        sourceIpHash: requestIpHash(request),
+        sourceActorHash: requestActorHash(
+          `${shop}:customer:${customerId || quote.customerEmail || ""}`,
+        ),
+        attachments: normalizeAttachments(body.attachments ?? body.attachment),
+      });
+      return json({ ok: true, message });
+    } catch (error) {
+      if (!(error instanceof Response)) throw error;
+      const retryAfter = error.headers.get("Retry-After");
+      return json(
+        { error: await error.text() },
+        {
+          status: error.status,
+          headers: retryAfter ? { "Retry-After": retryAfter } : undefined,
+        },
+      );
+    }
   }
 
   if (path.endsWith("/status")) {
     const quoteId = path.split("/")[1];
     const status = String(body.status ?? "");
     const quote = await getQuote(shop, quoteId);
-    const customerId =
-      url.searchParams.get("logged_in_customer_id") ??
-      String(body.customerId ?? "");
-    const customerEmail = String(body.customerEmail ?? "");
+    const customerId = url.searchParams.get("logged_in_customer_id");
 
     if (!quote) return json({ error: "Quote not found" }, { status: 404 });
-    const canAccessByEmail =
-      customerEmail &&
-      quote.customerEmail &&
-      quote.customerEmail.toLowerCase() === customerEmail.toLowerCase();
-    if (
-      customerId &&
-      quote.customerId &&
-      quote.customerId !== customerId &&
-      !canAccessByEmail
-    ) {
-      return json({ error: "Forbidden" }, { status: 403 });
+    const portalToken = String(body.portalToken ?? "");
+    if (portalToken && !verifyQuotePortalToken(portalToken, shop, quoteId)) {
+      return json({ error: "Invalid quote link" }, { status: 403 });
+    }
+    const accessError = await authorizeQuoteCustomer({
+      admin: context.admin,
+      customerId,
+      quote,
+    });
+    if (accessError) return accessError;
+    if (status !== "ACCEPTED" && status !== "DECLINED") {
+      return json({ error: "Invalid quote status." }, { status: 400 });
+    }
+    if (quote.status === status) {
+      return json({ ok: true, unchanged: true });
     }
     if (String(quote.status) === "EXPIRED") {
       return json(
         { error: "This quote has expired and can no longer be accepted." },
-        { status: 400 },
+        { status: 409 },
       );
     }
     if (quote.status !== "OFFERED_BY_MERCHANT") {
       return json(
         { error: "Only a sent merchant offer can be accepted or declined." },
-        { status: 400 },
+        { status: 409 },
       );
     }
-    if (status !== "ACCEPTED" && status !== "DECLINED") {
-      return json({ error: "Invalid quote status." }, { status: 400 });
-    }
 
-    await updateQuoteStatus(shop, quoteId, status);
+    try {
+      await updateQuoteStatus(shop, quoteId, status);
+    } catch (error) {
+      if (error instanceof Response) {
+        return json(
+          { error: await error.text() },
+          { status: error.status || 409 },
+        );
+      }
+      throw error;
+    }
     await addMessage({
       quoteId,
       shop,
@@ -331,9 +437,22 @@ async function handleStorefrontAction({ request, params }: ActionFunctionArgs) {
       senderName: String(body.customerName ?? "Customer"),
       message:
         status === "ACCEPTED"
-          ? "The customer accepted this quote."
-          : "The customer declined this quote.",
+          ? "Quote accepted."
+          : "Quote declined.",
+      messageType: "SYSTEM",
+      eventType: status === "ACCEPTED" ? "QUOTE_ACCEPTED" : "QUOTE_DECLINED",
     });
+
+    const updatedQuote = await getQuote(shop, quoteId);
+    if (updatedQuote) {
+      await queueQuoteNotification({
+        shop,
+        quote: quoteToEmailContext(updatedQuote),
+        templateKey: status === "ACCEPTED" ? "quote_accepted" : "quote_declined",
+        idempotencyKey: `${shop}:${quoteId}:${status === "ACCEPTED" ? "quote_accepted" : "quote_declined"}:v${updatedQuote.offerVersion}`,
+      });
+    }
+
     return json({ ok: true });
   }
 
@@ -411,6 +530,7 @@ async function handleStorefrontAction({ request, params }: ActionFunctionArgs) {
     items: body.items.map((item: Record<string, unknown>) => ({
       productId: String(item.productId ?? ""),
       variantId: String(item.variantId ?? ""),
+      variantTitle: String(item.variantTitle ?? ""),
       title: String(item.title ?? "Product"),
       imageUrl: String(item.imageUrl ?? ""),
       quantity: Math.max(1, Number(item.quantity ?? 1)),
@@ -787,6 +907,68 @@ function parseSelectedCustomers(value: string | null | undefined) {
 
 function normalizeShopifyId(id: string) {
   return String(id || "").split("/").pop() ?? "";
+}
+
+async function authorizeQuoteCustomer(input: {
+  admin?: AdminGraphqlClient;
+  customerId: string | null;
+  quote: {
+    customerId: string | null;
+    customerEmail: string | null;
+  };
+}) {
+  const loggedInCustomerId = normalizeShopifyId(input.customerId ?? "");
+  if (!loggedInCustomerId) {
+    return json(
+      { error: "Please log in to view this quote." },
+      { status: 401 },
+    );
+  }
+
+  if (!input.admin) {
+    return json(
+      { error: "Customer verification is temporarily unavailable." },
+      { status: 503 },
+    );
+  }
+
+  const response = await input.admin.graphql(
+    `#graphql
+      query QuoteCustomerIdentity($id: ID!) {
+        customer(id: $id) {
+          id
+          email
+        }
+      }`,
+    {
+      variables: {
+        id: `gid://shopify/Customer/${loggedInCustomerId}`,
+      },
+    },
+  );
+  const result = await response.json();
+  const customer = result.data?.customer as
+    | { id?: string; email?: string | null }
+    | null
+    | undefined;
+  if (!customer?.id) {
+    return json({ error: "Customer account not found." }, { status: 403 });
+  }
+
+  const quoteCustomerId = normalizeShopifyId(input.quote.customerId ?? "");
+  const idMatches = !quoteCustomerId || quoteCustomerId === loggedInCustomerId;
+  const quoteEmail = input.quote.customerEmail?.trim().toLowerCase() ?? "";
+  const loggedInEmail = customer.email?.trim().toLowerCase() ?? "";
+  const emailMatches = !quoteEmail || quoteEmail === loggedInEmail;
+
+  if (!idMatches || !emailMatches) {
+    return json(
+      { error: "This quote belongs to a different customer account." },
+      { status: 403 },
+    );
+  }
+
+  return null;
 }
 
 function matchesEmailPatterns(email: string, patterns: string | null | undefined) {

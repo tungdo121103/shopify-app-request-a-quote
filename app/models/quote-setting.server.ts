@@ -69,8 +69,8 @@ type QuoteSettingsRow = {
   widgetTextColor: string | null;
   widgetAnimation: string | null;
   widgetIconDataUrl: string | null;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: string | Date;
+  updatedAt: string | Date;
 };
 
 const defaultSettings: QuoteSettingsInput = {
@@ -202,127 +202,16 @@ function fromRow(row: QuoteSettingsRow): QuoteSettings {
       defaultWidgetSettings.widgetAnimation,
     ),
     widgetIconDataUrl: normalizeIconDataUrl(row.widgetIconDataUrl),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    createdAt: new Date(row.createdAt).toISOString(),
+    updatedAt: new Date(row.updatedAt).toISOString(),
   };
 }
 
-async function ensureQuoteSettingsTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "QuoteSetting" (
-      "id" TEXT NOT NULL PRIMARY KEY,
-      "shop" TEXT NOT NULL UNIQUE,
-      "requesterScope" TEXT NOT NULL DEFAULT 'SELECTED',
-      "allowCustomersNoPurchase" BOOLEAN NOT NULL DEFAULT true,
-      "allowRepeatCustomers" BOOLEAN NOT NULL DEFAULT false,
-      "allowAbandonedCheckout" BOOLEAN NOT NULL DEFAULT false,
-      "allowEmailSubscribers" BOOLEAN NOT NULL DEFAULT false,
-      "allowPurchasedCustomers" BOOLEAN NOT NULL DEFAULT false,
-      "selectedCustomerQuery" TEXT,
-      "emailPatterns" TEXT,
-      "productEligibility" TEXT NOT NULL DEFAULT 'ALL',
-      "selectedProductResources" TEXT,
-      "allowedProductResources" TEXT,
-      "excludedProductResources" TEXT,
-      "quoteExpiresAfterDays" INTEGER NOT NULL DEFAULT 7,
-      "reminderBeforeExpireDays" INTEGER NOT NULL DEFAULT 3,
-      "widgetStyle" TEXT NOT NULL DEFAULT 'text',
-      "widgetButtonText" TEXT NOT NULL DEFAULT 'Get Quote',
-      "widgetSize" TEXT NOT NULL DEFAULT 'medium',
-      "widgetOrientation" TEXT NOT NULL DEFAULT 'horizontal',
-      "widgetDesktopPosition" TEXT NOT NULL DEFAULT 'middle_left',
-      "widgetMobilePosition" TEXT NOT NULL DEFAULT 'bottom_right',
-      "widgetDisplayMode" TEXT NOT NULL DEFAULT 'all',
-      "widgetSpecificPages" TEXT,
-      "widgetBackgroundColor" TEXT NOT NULL DEFAULT '#120670',
-      "widgetTextColor" TEXT NOT NULL DEFAULT '#ffffff',
-      "widgetAnimation" TEXT NOT NULL DEFAULT 'pulse',
-      "widgetIconDataUrl" TEXT,
-      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await ensureColumn("QuoteSetting", "selectedProductResources", "TEXT");
-  await ensureColumn("QuoteSetting", "allowedProductResources", "TEXT");
-  await ensureColumn("QuoteSetting", "excludedProductResources", "TEXT");
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetStyle",
-    "TEXT NOT NULL DEFAULT 'text'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetButtonText",
-    "TEXT NOT NULL DEFAULT 'Get Quote'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetSize",
-    "TEXT NOT NULL DEFAULT 'medium'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetOrientation",
-    "TEXT NOT NULL DEFAULT 'horizontal'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetDesktopPosition",
-    "TEXT NOT NULL DEFAULT 'middle_left'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetMobilePosition",
-    "TEXT NOT NULL DEFAULT 'bottom_right'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetDisplayMode",
-    "TEXT NOT NULL DEFAULT 'all'",
-  );
-  await ensureColumn("QuoteSetting", "widgetSpecificPages", "TEXT");
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetBackgroundColor",
-    "TEXT NOT NULL DEFAULT '#120670'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetTextColor",
-    "TEXT NOT NULL DEFAULT '#ffffff'",
-  );
-  await ensureColumn(
-    "QuoteSetting",
-    "widgetAnimation",
-    "TEXT NOT NULL DEFAULT 'pulse'",
-  );
-  await ensureColumn("QuoteSetting", "widgetIconDataUrl", "TEXT");
-}
-
-async function ensureColumn(table: string, column: string, definition: string) {
-  const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(
-    `PRAGMA table_info("${table}")`,
-  );
-  if (columns.some((item) => item.name === column)) return;
-
-  await prisma.$executeRawUnsafe(
-    `ALTER TABLE "${table}" ADD COLUMN "${column}" ${definition}`,
-  );
-}
-
 async function findSettingsRow(shop: string) {
-  const rows = await prisma.$queryRawUnsafe<QuoteSettingsRow[]>(
-    `SELECT * FROM "QuoteSetting" WHERE "shop" = ? LIMIT 1`,
-    shop,
-  );
-
-  return rows[0] ?? null;
+  return prisma.quoteSetting.findUnique({ where: { shop } });
 }
 
 export async function getQuoteSettings(shop: string) {
-  await ensureQuoteSettingsTable();
-
   const existing = await findSettingsRow(shop);
   if (existing) return fromRow(existing);
 
@@ -337,64 +226,11 @@ export async function updateQuoteSettings(
   shop: string,
   input: QuoteSettingsInput,
 ) {
-  await ensureQuoteSettingsTable();
-
-  await prisma.$executeRawUnsafe(
-    `
-      INSERT INTO "QuoteSetting" (
-        "id",
-        "shop",
-        "requesterScope",
-        "allowCustomersNoPurchase",
-        "allowRepeatCustomers",
-        "allowAbandonedCheckout",
-        "allowEmailSubscribers",
-        "allowPurchasedCustomers",
-        "selectedCustomerQuery",
-        "emailPatterns",
-        "productEligibility",
-        "selectedProductResources",
-        "allowedProductResources",
-        "excludedProductResources",
-        "quoteExpiresAfterDays",
-        "reminderBeforeExpireDays",
-        "updatedAt"
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT("shop") DO UPDATE SET
-        "requesterScope" = excluded."requesterScope",
-        "allowCustomersNoPurchase" = excluded."allowCustomersNoPurchase",
-        "allowRepeatCustomers" = excluded."allowRepeatCustomers",
-        "allowAbandonedCheckout" = excluded."allowAbandonedCheckout",
-        "allowEmailSubscribers" = excluded."allowEmailSubscribers",
-        "allowPurchasedCustomers" = excluded."allowPurchasedCustomers",
-        "selectedCustomerQuery" = excluded."selectedCustomerQuery",
-        "emailPatterns" = excluded."emailPatterns",
-        "productEligibility" = excluded."productEligibility",
-        "selectedProductResources" = excluded."selectedProductResources",
-        "allowedProductResources" = excluded."allowedProductResources",
-        "excludedProductResources" = excluded."excludedProductResources",
-        "quoteExpiresAfterDays" = excluded."quoteExpiresAfterDays",
-        "reminderBeforeExpireDays" = excluded."reminderBeforeExpireDays",
-        "updatedAt" = CURRENT_TIMESTAMP
-    `,
-    `quote-setting-${shop}`,
-    shop,
-    input.requesterScope,
-    input.allowCustomersNoPurchase ? 1 : 0,
-    input.allowRepeatCustomers ? 1 : 0,
-    input.allowAbandonedCheckout ? 1 : 0,
-    input.allowEmailSubscribers ? 1 : 0,
-    input.allowPurchasedCustomers ? 1 : 0,
-    input.selectedCustomerQuery,
-    input.emailPatterns,
-    input.productEligibility,
-    input.selectedProductResources,
-    input.allowedProductResources,
-    input.excludedProductResources,
-    input.quoteExpiresAfterDays,
-    input.reminderBeforeExpireDays,
-  );
+  await prisma.quoteSetting.upsert({
+    where: { shop },
+    create: { id: `quote-setting-${shop}`, shop, ...input },
+    update: input,
+  });
 
   const row = await findSettingsRow(shop);
   if (!row) throw new Error("Could not save quote settings.");
@@ -438,45 +274,57 @@ export function normalizeSettingsForm(formData: FormData): QuoteSettingsInput {
   };
 }
 
+export type ExpirationSettingsErrors = Partial<
+  Record<"quoteExpiresAfterDays" | "reminderBeforeExpireDays", string>
+>;
+
+export function validateExpirationSettingsForm(
+  formData: FormData,
+): ExpirationSettingsErrors {
+  const errors: ExpirationSettingsErrors = {};
+  const expiresValue = String(formData.get("quoteExpiresAfterDays") ?? "").trim();
+  const reminderValue = String(
+    formData.get("reminderBeforeExpireDays") ?? "",
+  ).trim();
+  const expiresAfterDays = Number(expiresValue);
+  const reminderBeforeExpireDays = Number(reminderValue);
+
+  if (
+    !expiresValue ||
+    !Number.isInteger(expiresAfterDays) ||
+    expiresAfterDays < 1 ||
+    expiresAfterDays > 365
+  ) {
+    errors.quoteExpiresAfterDays =
+      "Enter a whole number between 1 and 365 days.";
+  }
+
+  if (
+    !reminderValue ||
+    !Number.isInteger(reminderBeforeExpireDays) ||
+    reminderBeforeExpireDays < 0 ||
+    reminderBeforeExpireDays > 364
+  ) {
+    errors.reminderBeforeExpireDays =
+      "Enter a whole number between 0 and 364 days.";
+  } else if (
+    !errors.quoteExpiresAfterDays &&
+    reminderBeforeExpireDays >= expiresAfterDays
+  ) {
+    errors.reminderBeforeExpireDays =
+      "Reminder must be earlier than the quote expiration. Use 0 to disable it.";
+  }
+
+  return errors;
+}
+
 export async function updateWidgetSettings(
   shop: string,
   input: WidgetSettingsInput,
 ) {
   await getQuoteSettings(shop);
 
-  await prisma.$executeRawUnsafe(
-    `
-      UPDATE "QuoteSetting"
-      SET
-        "widgetStyle" = ?,
-        "widgetButtonText" = ?,
-        "widgetSize" = ?,
-        "widgetOrientation" = ?,
-        "widgetDesktopPosition" = ?,
-        "widgetMobilePosition" = ?,
-        "widgetDisplayMode" = ?,
-        "widgetSpecificPages" = ?,
-        "widgetBackgroundColor" = ?,
-        "widgetTextColor" = ?,
-        "widgetAnimation" = ?,
-        "widgetIconDataUrl" = ?,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "shop" = ?
-    `,
-    input.widgetStyle,
-    input.widgetButtonText,
-    input.widgetSize,
-    input.widgetOrientation,
-    input.widgetDesktopPosition,
-    input.widgetMobilePosition,
-    input.widgetDisplayMode,
-    input.widgetSpecificPages,
-    input.widgetBackgroundColor,
-    input.widgetTextColor,
-    input.widgetAnimation,
-    input.widgetIconDataUrl,
-    shop,
-  );
+  await prisma.quoteSetting.update({ where: { shop }, data: input });
 
   return getQuoteSettings(shop);
 }

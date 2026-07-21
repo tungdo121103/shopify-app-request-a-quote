@@ -1,0 +1,537 @@
+/* PDF template route styles. */
+@keyframes quoteToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes managerActionSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes widgetPulse {
+  0%,
+  100% {
+    box-shadow: 0 8px 18px rgb(0 0 0 / 18%);
+  }
+
+  50% {
+    box-shadow: 0 8px 22px rgb(18 6 112 / 34%);
+  }
+}
+
+@keyframes widgetBounce {
+  0%,
+  100% {
+    margin-top: 0;
+  }
+
+  50% {
+    margin-top: -6px;
+  }
+}
+
+.pdfTemplateForm {
+  padding-bottom: 32px;
+}
+
+.pdfTemplateLayout {
+  display: grid;
+  grid-template-columns: minmax(330px, 0.78fr) minmax(460px, 1.22fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.pdfTemplateEditor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pdfTemplateActions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.pdfSettingsCard,
+.pdfPreviewPanel {
+  border: 1px solid #e1e3e5;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+}
+
+.pdfSettingsCard {
+  padding: 20px;
+}
+
+.pdfCardHeader {
+  margin-bottom: 18px;
+}
+
+.pdfCardHeader h2,
+.pdfPreviewHeading h2 {
+  margin: 0;
+  color: #202223;
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.pdfCardHeader p,
+.pdfPreviewHeading p {
+  margin: 5px 0 0;
+  color: #6d7175;
+  font-size: 13px;
+}
+
+.pdfFieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.pdfFieldset + .pdfFieldset {
+  border-top: 1px solid #e8e8e8;
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.pdfFieldset legend {
+  margin-bottom: 10px;
+  color: #303030;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.pdfCheckbox {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 0;
+  color: #303030;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pdfCheckbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #303030;
+}
+
+.pdfField {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 14px;
+  color: #303030;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.pdfField select,
+.pdfField input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 38px;
+  border: 1px solid #c9cccf;
+  border-radius: 8px;
+  padding: 0 11px;
+  color: #202223;
+  background: #fff;
+  font: inherit;
+  font-weight: 450;
+}
+
+.pdfRangeField {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: #303030;
+  font-size: 13px;
+}
+
+.pdfRangeField span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.pdfRangeField input {
+  width: 100%;
+  accent-color: #303030;
+}
+
+.pdfDesignGrid,
+.pdfColorGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pdfColorGrid {
+  margin-top: 18px;
+}
+
+.pdfColorField {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.pdfColorField input[type="color"] {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border: 1px solid #c9cccf;
+  border-radius: 9px;
+  padding: 3px;
+  background: #fff;
+}
+
+.pdfColorField span,
+.pdfColorField strong,
+.pdfColorField small {
+  display: block;
+}
+
+.pdfColorField strong {
+  color: #303030;
+  font-size: 12px;
+}
+
+.pdfColorField small {
+  margin-top: 2px;
+  color: #6d7175;
+  font-size: 11px;
+}
+
+.pdfPreviewPanel {
+  position: sticky;
+  top: 18px;
+  padding: 20px;
+}
+
+.pdfPreviewHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.pdfPaperWrap {
+  display: flex;
+  max-height: min(700px, calc(100vh - 180px));
+  min-height: 560px;
+  align-items: center;
+  flex-direction: column;
+  gap: 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 12px;
+  padding: 28px;
+  background: #f1f2f4;
+  scrollbar-color: #aeb4bb #f1f2f4;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.pdfPaperWrap::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.pdfPaperWrap::-webkit-scrollbar-thumb {
+  border: 2px solid #f1f2f4;
+  border-radius: 999px;
+  background: #aeb4bb;
+}
+
+.pdfPaperWrap::-webkit-scrollbar-thumb:hover {
+  background: #8c939c;
+}
+
+.pdfPaperWrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pdfPaper {
+  box-sizing: border-box;
+  width: min(100%, 510px);
+  flex: 0 0 auto;
+  aspect-ratio: 1 / 1.414;
+  padding: 6.5%;
+  background: #fff;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 14%);
+}
+
+.pdfContinuationPaper {
+  display: flex;
+  flex-direction: column;
+}
+
+.pdfContinuationHeader {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid #e3e6eb;
+  margin-bottom: 22px;
+  padding-bottom: 12px;
+  color: #52617d;
+  font-weight: 700;
+}
+
+.pdfContinuationHeader div {
+  display: flex;
+  max-width: 110px;
+  align-items: center;
+}
+
+.pdfContinuationHeader img {
+  display: block;
+  width: 100%;
+  max-height: 38px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.pdfPaperHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.pdfPaperHeader h3 {
+  margin: 0;
+  font-size: 2.5em;
+  letter-spacing: 0.08em;
+}
+
+.pdfDemoLogo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  min-height: 32px;
+  line-height: 1;
+}
+
+.pdfDemoLogo img {
+  display: block;
+  width: 100%;
+  max-height: 54px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.pdfDemoLogo i {
+  font-size: 3em;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.pdfDemoLogo span {
+  color: #27324b;
+  font-size: 0.7em;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.pdfMeta {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.pdfMeta > div span,
+.pdfMeta > div strong {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.pdfMeta dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 5px 14px;
+  align-content: start;
+  margin: 0;
+}
+
+.pdfMetaRow {
+  display: contents;
+}
+
+.pdfMeta dt {
+  color: #52617d;
+  font-weight: 700;
+}
+
+.pdfMeta dd {
+  margin: 0;
+  font-weight: 650;
+}
+
+.pdfCustomer {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  margin: 18px 0;
+  padding: 12px;
+}
+
+.pdfCustomer strong {
+  margin-bottom: 3px;
+  color: #52617d;
+}
+
+.pdfProductTable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.pdfProductTable th {
+  padding: 7px 8px;
+  font-size: 0.8em;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pdfProductTable th:first-child {
+  border-radius: 5px 0 0 5px;
+  text-align: left;
+}
+
+.pdfProductTable th:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
+.pdfProductTable td {
+  border-bottom: 1px solid #e8ebef;
+  padding: 9px 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pdfProductTable td:first-child {
+  text-align: left;
+}
+
+.pdfProduct {
+  display: flex;
+  min-width: 150px;
+  align-items: center;
+  gap: 8px;
+}
+
+.pdfProduct > i {
+  width: 12px;
+  height: 32px;
+  flex: 0 0 12px;
+  border: 1px solid #e1e3e5;
+  border-radius: 3px;
+  background: #f1f2f4;
+}
+
+.pdfProduct > img {
+  width: 24px;
+  height: 32px;
+  flex: 0 0 24px;
+  border: 1px solid #e1e3e5;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+.pdfProduct b,
+.pdfProduct small {
+  display: block;
+}
+
+.pdfProduct small {
+  margin-top: 2px;
+  color: #7a8496;
+}
+
+.pdfGrandTotal {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 16px;
+  font-size: 1.2em;
+}
+
+.pdfEmptyPreview {
+  border: 1px dashed #c9d0d8;
+  border-radius: 8px;
+  margin-top: 18px;
+  padding: 24px 16px;
+  color: #6d7175;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.pdfPaper footer {
+  border-top: 1px solid #e3e6eb;
+  margin-top: 34px;
+  padding-top: 12px;
+  color: #52617d;
+  font-size: 0.9em;
+  font-weight: 800;
+  text-align: center;
+}
+
+.pdfContinuationPaper footer {
+  margin-top: auto;
+}
+
+@media (max-width: 1100px) {
+  .pdfTemplateLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1100px) {
+
+  .pdfPreviewPanel {
+    position: static;
+  }
+}
+
+@media (max-width: 620px) {
+  .pdfDesignGrid,
+  .pdfColorGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+
+  .pdfPreviewPanel {
+    padding: 12px;
+  }
+}
+
+@media (max-width: 620px) {
+
+  .pdfPaperWrap {
+    max-height: 620px;
+    min-height: 0;
+    padding: 10px;
+  }
+}

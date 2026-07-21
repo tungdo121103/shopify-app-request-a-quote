@@ -1,71 +1,21 @@
 import { Prisma, type MessageSender, type QuoteStatus } from "@prisma/client";
 import prisma from "~/db.server";
 import { getQuoteSettings } from "~/models/quote-setting.server";
-
-const demoItems = [
-  {
-    title: "The 3p Fulfilled Snowboard",
-    quantity: 1,
-    unitPrice: 2629.95,
-    quotePrice: 2498.45,
-    inventoryStatus: "OUT_OF_STOCK",
-  },
-  {
-    title: "The Inventory Not Tracked Snowboard",
-    quantity: 1,
-    unitPrice: 949.95,
-    quotePrice: 902.45,
-    inventoryStatus: "AVAILABLE",
-  },
-  {
-    title: "The Collection Snowboard: Oxygen",
-    quantity: 1,
-    unitPrice: 1025,
-    quotePrice: 973.75,
-    inventoryStatus: "AVAILABLE",
-  },
-];
-
-async function ensureQuoteReminderColumns() {
-  const columns = await prisma.$queryRawUnsafe<Array<{ name: string }>>(
-    `PRAGMA table_info("Quote")`,
-  );
-  if (columns.some((column) => column.name === "reminderSentAt")) return;
-
-  await prisma.$executeRawUnsafe(
-    `ALTER TABLE "Quote" ADD COLUMN "reminderSentAt" DATETIME`,
-  );
-}
-
-async function expireOverdueQuotes(shop: string, quoteId?: string) {
-  await runQuoteExpirationJobs({
-    shop,
-    quoteId,
-    includeReminders: false,
-  });
-}
-
-async function ensureQuoteReadStateTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "QuoteReadState" (
-      "id" TEXT NOT NULL PRIMARY KEY,
-      "shop" TEXT NOT NULL,
-      "quoteId" TEXT NOT NULL,
-      "viewer" TEXT NOT NULL,
-      "viewerId" TEXT NOT NULL DEFAULT '',
-      "lastReadAt" DATETIME NOT NULL,
-      "updatedAt" DATETIME NOT NULL,
-      UNIQUE("quoteId", "viewer", "viewerId")
-    )
-  `);
-  await prisma.$executeRawUnsafe(`
-    CREATE INDEX IF NOT EXISTS "QuoteReadState_shop_viewer_idx"
-    ON "QuoteReadState" ("shop", "viewer")
-  `);
-}
+import { queueQuoteNotification } from "~/models/quote-email.server";
+import { assertQuoteStatusTransition } from "~/lib/quote-status";
+import {
+  normalizeClientMessageId,
+  QUOTE_MESSAGE_BURST_LIMIT,
+  QUOTE_MESSAGE_MINUTE_LIMIT,
+  QUOTE_MESSAGE_SHOP_MINUTE_LIMIT,
+  validateQuoteMessage,
+} from "~/lib/quote-message-policy";
 
 function makeReadStateId(quoteId: string, viewer: string, viewerId: string) {
-  return `read_${quoteId}_${viewer}_${viewerId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `read_${quoteId}_${viewer}_${viewerId}`.replace(
+    /[^a-zA-Z0-9_-]/g,
+    "_",
+  );
 }
 
 export async function markQuoteRead(input: {
@@ -74,24 +24,25 @@ export async function markQuoteRead(input: {
   viewer: "CUSTOMER" | "MANAGER";
   viewerId?: string | null;
 }) {
-  await ensureQuoteReadStateTable();
   const viewerId = input.viewerId || input.shop;
-  const now = new Date().toISOString();
-  await prisma.$executeRawUnsafe(
-    `
-      INSERT INTO "QuoteReadState" ("id", "shop", "quoteId", "viewer", "viewerId", "lastReadAt", "updatedAt")
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT("quoteId", "viewer", "viewerId")
-      DO UPDATE SET "lastReadAt" = excluded."lastReadAt", "updatedAt" = excluded."updatedAt"
-    `,
-    makeReadStateId(input.quoteId, input.viewer, viewerId),
-    input.shop,
-    input.quoteId,
-    input.viewer,
-    viewerId,
-    now,
-    now,
-  );
+  await prisma.quoteReadState.upsert({
+    where: {
+      quoteId_viewer_viewerId: {
+        quoteId: input.quoteId,
+        viewer: input.viewer,
+        viewerId,
+      },
+    },
+    create: {
+      id: makeReadStateId(input.quoteId, input.viewer, viewerId),
+      shop: input.shop,
+      quoteId: input.quoteId,
+      viewer: input.viewer,
+      viewerId,
+      lastReadAt: new Date(),
+    },
+    update: { lastReadAt: new Date() },
+  });
 }
 
 async function getUnreadCountsForQuotes(input: {
@@ -100,28 +51,21 @@ async function getUnreadCountsForQuotes(input: {
   viewer: "CUSTOMER" | "MANAGER";
   viewerId?: string | null;
   ignoredSender: MessageSender;
+  includeUnopenedQuote?: boolean;
 }) {
   const uniqueQuoteIds = [...new Set(input.quoteIds.filter(Boolean))];
   const counts = new Map<string, number>();
   if (!uniqueQuoteIds.length) return counts;
 
-  await ensureQuoteReadStateTable();
   const viewerId = input.viewerId || input.shop;
-  const placeholders = uniqueQuoteIds.map(() => "?").join(", ");
-  const readRows = await prisma.$queryRawUnsafe<
-    Array<{ quoteId: string; lastReadAt: string | Date }>
-  >(
-    `
-      SELECT "quoteId", "lastReadAt"
-      FROM "QuoteReadState"
-      WHERE "quoteId" IN (${placeholders})
-        AND "viewer" = ?
-        AND "viewerId" = ?
-    `,
-    ...uniqueQuoteIds,
-    input.viewer,
-    viewerId,
-  );
+  const readRows = await prisma.quoteReadState.findMany({
+    where: {
+      quoteId: { in: uniqueQuoteIds },
+      viewer: input.viewer,
+      viewerId,
+    },
+    select: { quoteId: true, lastReadAt: true },
+  });
   const readAtByQuote = new Map(
     readRows.map((row) => [row.quoteId, new Date(row.lastReadAt)]),
   );
@@ -136,30 +80,16 @@ async function getUnreadCountsForQuotes(input: {
           createdAt: { gt: lastReadAt },
         },
       });
-      counts.set(quoteId, count);
+      const quoteHasNeverBeenOpened = !readAtByQuote.has(quoteId);
+      counts.set(
+        quoteId,
+        input.includeUnopenedQuote && quoteHasNeverBeenOpened
+          ? Math.max(1, count)
+          : count,
+      );
     }),
   );
   return counts;
-}
-
-export async function ensureDemoQuote(shop: string) {
-  const existing = await prisma.quote.findFirst({ where: { shop } });
-  if (existing) return existing;
-
-  return prisma.quote.create({
-    data: {
-      quoteNumber: `RFQ-${Date.now().toString().slice(-5)}`,
-      shop,
-      customerId: "demo-customer",
-      customerName: "Demo buyer",
-      customerEmail: "buyer@example.com",
-      status: "REQUESTED_BY_CUSTOMER",
-      originalTotal: 4604.9,
-      quoteTotal: 4374.65,
-      note: "Please quote your best wholesale price.",
-      items: { create: demoItems },
-    },
-  });
 }
 
 export async function listQuotes(
@@ -172,8 +102,6 @@ export async function listQuotes(
     pageSize?: number;
   } = {},
 ) {
-  await ensureDemoQuote(shop);
-  await expireOverdueQuotes(shop);
   const page = Math.max(1, Number(filters.page || 1));
   const pageSize = Math.min(50, Math.max(1, Number(filters.pageSize || 10)));
   const orderBy:
@@ -182,18 +110,18 @@ export async function listQuotes(
     filters.sort === "UPDATED_ASC"
       ? { updatedAt: "asc" }
       : filters.sort === "CREATED_ASC"
-      ? { createdAt: "asc" }
-      : filters.sort === "VALUE_DESC"
-        ? { quoteTotal: "desc" }
-        : filters.sort === "VALUE_ASC"
-          ? { quoteTotal: "asc" }
-          : filters.sort === "CUSTOMER_ASC"
-            ? [{ customerEmail: "asc" }, { customerName: "asc" }]
-            : filters.sort === "CUSTOMER_DESC"
-              ? [{ customerEmail: "desc" }, { customerName: "desc" }]
-              : filters.sort === "EXPIRES_ASC"
-                ? { expiresAt: "asc" }
-                : { updatedAt: "desc" };
+        ? { createdAt: "asc" }
+        : filters.sort === "VALUE_DESC"
+          ? { quoteTotal: "desc" }
+          : filters.sort === "VALUE_ASC"
+            ? { quoteTotal: "asc" }
+            : filters.sort === "CUSTOMER_ASC"
+              ? [{ customerEmail: "asc" }, { customerName: "asc" }]
+              : filters.sort === "CUSTOMER_DESC"
+                ? [{ customerEmail: "desc" }, { customerName: "desc" }]
+                : filters.sort === "EXPIRES_ASC"
+                  ? { expiresAt: "asc" }
+                  : { updatedAt: "desc" };
 
   const where: Prisma.QuoteWhereInput = {
     shop,
@@ -227,6 +155,7 @@ export async function listQuotes(
     viewer: "MANAGER",
     viewerId: "manager",
     ignoredSender: "MANAGER",
+    includeUnopenedQuote: true,
   });
 
   return {
@@ -256,7 +185,6 @@ export async function deleteQuote(shop: string, quoteId: string) {
 }
 
 export async function getQuote(shop: string, id: string) {
-  await expireOverdueQuotes(shop, id);
   const quote = await prisma.quote.findFirst({
     where: { id, shop },
     include: {
@@ -283,35 +211,153 @@ export async function getQuote(shop: string, id: string) {
   };
 }
 
+export async function getLatestQuote(shop: string) {
+  const quote = await prisma.quote.findFirst({
+    where: { shop },
+    include: { items: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!quote) return null;
+
+  return {
+    ...quote,
+    originalTotal: quote.originalTotal.toNumber(),
+    quoteTotal: quote.quoteTotal.toNumber(),
+    items: quote.items.map((item) => ({
+      ...item,
+      unitPrice: item.unitPrice.toNumber(),
+      quotePrice: item.quotePrice.toNumber(),
+    })),
+  };
+}
+
 export async function addMessage(input: {
   quoteId: string;
   shop: string;
   sender: MessageSender;
   senderName?: string;
   message: string;
+  messageType?: "USER" | "SYSTEM";
+  eventType?: string;
+  clientMessageId?: string | null;
+  sourceIpHash?: string | null;
+  sourceActorHash?: string | null;
   attachments?: Array<{
     fileName: string;
     fileUrl: string;
     mimeType?: string;
   }>;
 }) {
+  const clientMessageId = normalizeClientMessageId(input.clientMessageId);
+  const normalizedMessage = input.message.trim();
+  const validationError = validateQuoteMessage({
+    message: normalizedMessage,
+    attachments: input.attachments,
+  });
+  if (validationError) throw new Response(validationError, { status: 400 });
+
   const quote = await prisma.quote.findFirst({
     where: { id: input.quoteId, shop: input.shop },
     select: { id: true, status: true },
   });
   if (!quote) throw new Response("Quote not found", { status: 404 });
-  const nextStatus =
-    quote.status === "REQUESTED_BY_CUSTOMER"
-      ? "NEGOTIATING"
-      : quote.status;
+  if (clientMessageId) {
+    const existingMessage = await prisma.conversationMessage.findFirst({
+      where: { quoteId: quote.id, sender: input.sender, clientMessageId },
+      include: { attachments: true },
+    });
+    if (existingMessage) return existingMessage;
+  }
+  if (
+    (input.messageType ?? "USER") === "USER" &&
+    quote.status === "CONVERTED_TO_ORDER"
+  ) {
+    throw new Response("This quote is closed and can no longer receive messages.", {
+      status: 409,
+    });
+  }
 
-  return prisma.$transaction(async (tx) => {
+  if ((input.messageType ?? "USER") === "USER") {
+    const now = Date.now();
+    const minuteAgo = new Date(now - 60_000);
+    const burstAgo = new Date(now - 10_000);
+    const [burstCount, minuteCount, shopCount, ipCount, actorCount] =
+      await Promise.all([
+      prisma.conversationMessage.count({
+        where: {
+          quoteId: quote.id,
+          sender: input.sender,
+          messageType: "USER",
+          createdAt: { gte: burstAgo },
+        },
+      }),
+      prisma.conversationMessage.count({
+        where: {
+          quoteId: quote.id,
+          sender: input.sender,
+          messageType: "USER",
+          createdAt: { gte: minuteAgo },
+        },
+      }),
+      prisma.conversationMessage.count({
+        where: {
+          quote: { shop: input.shop },
+          messageType: "USER",
+          createdAt: { gte: minuteAgo },
+        },
+      }),
+      input.sourceIpHash
+        ? prisma.conversationMessage.count({
+            where: {
+              sourceIpHash: input.sourceIpHash,
+              messageType: "USER",
+              createdAt: { gte: minuteAgo },
+            },
+          })
+        : Promise.resolve(0),
+      input.sourceActorHash
+        ? prisma.conversationMessage.count({
+            where: {
+              sourceActorHash: input.sourceActorHash,
+              messageType: "USER",
+              createdAt: { gte: minuteAgo },
+            },
+          })
+        : Promise.resolve(0),
+    ]);
+    if (
+      burstCount >= QUOTE_MESSAGE_BURST_LIMIT ||
+      minuteCount >= QUOTE_MESSAGE_MINUTE_LIMIT ||
+      ipCount >= QUOTE_MESSAGE_MINUTE_LIMIT ||
+      actorCount >= QUOTE_MESSAGE_MINUTE_LIMIT ||
+      shopCount >= QUOTE_MESSAGE_SHOP_MINUTE_LIMIT
+    ) {
+      throw new Response("Too many messages. Please wait and try again.", {
+        status: 429,
+        headers: { "Retry-After": "10" },
+      });
+    }
+  }
+
+  const createMessage = () => prisma.$transaction(async (tx) => {
+    if (clientMessageId) {
+      const duplicate = await tx.conversationMessage.findFirst({
+        where: { quoteId: quote.id, sender: input.sender, clientMessageId },
+        include: { attachments: true },
+      });
+      if (duplicate) return { message: duplicate, negotiationStarted: false };
+    }
     const message = await tx.conversationMessage.create({
       data: {
         quoteId: quote.id,
+        clientMessageId,
+        sourceIpHash: input.sourceIpHash,
+        sourceActorHash: input.sourceActorHash,
         sender: input.sender,
         senderName: input.senderName,
-        message: input.message,
+        message: normalizedMessage,
+        messageType: input.messageType ?? "USER",
+        eventType: input.eventType,
       },
     });
 
@@ -325,16 +371,108 @@ export async function addMessage(input: {
       });
     }
 
-    await tx.quote.update({
-      where: { id: quote.id },
-      data: {
-        status: nextStatus,
-        ...(nextStatus === "NEGOTIATING" ? { expiresAt: null } : {}),
-      },
-    });
+    const negotiationStarted = input.sender === "MANAGER"
+      ? (await tx.quote.updateMany({
+          where: { id: quote.id, status: "REQUESTED_BY_CUSTOMER" },
+          data: { status: "NEGOTIATING", expiresAt: null },
+        })).count === 1
+      : false;
 
-    return message;
+    const storedMessage = await tx.conversationMessage.findUniqueOrThrow({
+      where: { id: message.id },
+      include: { attachments: true },
+    });
+    return { message: storedMessage, negotiationStarted };
   });
+
+  let result;
+  try {
+    result = await createMessage();
+  } catch (error) {
+    if (clientMessageId && error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const duplicate = await prisma.conversationMessage.findFirst({
+        where: { quoteId: quote.id, sender: input.sender, clientMessageId },
+        include: { attachments: true },
+      });
+      if (duplicate) return duplicate;
+    }
+    throw error;
+  }
+
+  if (result.negotiationStarted) {
+    const fullQuote = await getQuote(input.shop, input.quoteId);
+    if (fullQuote) {
+      await queueQuoteNotification({
+        shop: input.shop,
+        quote: quoteToEmailContext(fullQuote),
+        templateKey: "negotiation_started",
+        idempotencyKey: `${input.shop}:${input.quoteId}:negotiation_started`,
+      });
+    }
+  }
+
+  return result.message;
+}
+
+type NumberValue = number | { toNumber: () => number } | string;
+
+type QuoteEmailSource = {
+  id: string;
+  quoteNumber: string;
+  customerName?: string | null;
+  customerEmail?: string | null;
+  quoteTotal: NumberValue;
+  originalTotal: NumberValue;
+  currency: string;
+  status: QuoteStatus | string;
+  note?: string | null;
+  expiresAt?: Date | string | null;
+  orderInvoiceUrl?: string | null;
+  orderName?: string | null;
+  items: Array<{
+    title: string;
+    quantity: number;
+    quotePrice: NumberValue;
+    unitPrice: NumberValue;
+    imageUrl?: string | null;
+    sku?: string | null;
+    variantTitle?: string | null;
+  }>;
+};
+
+function toNumber(value: NumberValue) {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Number(value);
+  if (value && typeof value.toNumber === "function") {
+    return Number(value.toNumber());
+  }
+  return 0;
+}
+
+function quoteToEmailContext(quote: QuoteEmailSource) {
+  return {
+    id: quote.id,
+    quoteNumber: quote.quoteNumber,
+    customerName: quote.customerName || "Customer",
+    customerEmail: quote.customerEmail ?? null,
+    quoteTotal: toNumber(quote.quoteTotal),
+    originalTotal: toNumber(quote.originalTotal),
+    currency: quote.currency,
+    status: String(quote.status),
+    note: quote.note ?? null,
+    expiresAt: quote.expiresAt ? String(quote.expiresAt) : null,
+    orderInvoiceUrl: quote.orderInvoiceUrl ?? null,
+    orderName: quote.orderName ?? null,
+    items: quote.items.map((item) => ({
+      title: item.title,
+      quantity: item.quantity,
+      quotePrice: toNumber(item.quotePrice),
+      unitPrice: toNumber(item.unitPrice),
+      imageUrl: item.imageUrl ?? undefined,
+      sku: item.sku ?? undefined,
+      variantTitle: item.variantTitle ?? undefined,
+    })),
+  };
 }
 
 export async function updateQuoteStatus(
@@ -344,17 +482,31 @@ export async function updateQuoteStatus(
 ) {
   const quote = await prisma.quote.findFirst({
     where: { id: quoteId, shop },
-    select: { id: true },
+    select: { id: true, status: true },
   });
   if (!quote) throw new Response("Quote not found", { status: 404 });
 
-  return prisma.quote.update({
-    where: { id: quote.id },
+  assertQuoteStatusTransition(quote.status, status);
+  if (quote.status === status) {
+    return prisma.quote.findUniqueOrThrow({ where: { id: quote.id } });
+  }
+
+  const result = await prisma.quote.updateMany({
+    where: { id: quote.id, status: quote.status },
     data: {
       status,
-      ...(status === "NEGOTIATING" ? { expiresAt: null } : {}),
+      ...(["NEGOTIATING", "ACCEPTED", "DECLINED", "CONVERTED_TO_ORDER"].includes(status)
+        ? { expiresAt: null, reminderSentAt: null }
+        : {}),
     },
   });
+  if (result.count !== 1) {
+    throw new Response("Quote status changed in another request. Please refresh and try again.", {
+      status: 409,
+    });
+  }
+
+  return prisma.quote.findUniqueOrThrow({ where: { id: quote.id } });
 }
 
 export async function updateQuotePrices(input: {
@@ -368,6 +520,10 @@ export async function updateQuotePrices(input: {
     include: { items: true },
   });
   if (!quote) throw new Response("Quote not found", { status: 404 });
+
+  if (input.status) {
+    assertQuoteStatusTransition(quote.status, input.status);
+  }
 
   const prices = new Map(input.items.map((item) => [item.id, item.quotePrice]));
   const quantities = new Map(
@@ -434,6 +590,15 @@ export async function updateQuotePrices(input: {
         data: {
           quotePrice: item.quotePrice,
           quantity: Math.max(1, Math.floor(Number(item.quantity ?? 1))),
+          ...(shouldSetExpiration
+            ? {
+                lastOfferedQuotePrice: item.quotePrice,
+                lastOfferedQuantity: Math.max(
+                  1,
+                  Math.floor(Number(item.quantity ?? 1)),
+                ),
+              }
+            : {}),
         },
       }),
     ),
@@ -443,17 +608,30 @@ export async function updateQuotePrices(input: {
         originalTotal,
         quoteTotal,
         ...(input.status ? { status: input.status } : {}),
+        ...(shouldSetExpiration ? { offerVersion: { increment: 1 } } : {}),
         ...(shouldSetExpiration ? { expiresAt } : {}),
       },
     }),
   ]);
   if (shouldSetExpiration) {
-    await ensureQuoteReminderColumns();
-    await prisma.$executeRawUnsafe(
-      `UPDATE "Quote" SET "reminderSentAt" = NULL WHERE "id" = ?`,
-      quote.id,
-    );
+    await prisma.quote.update({
+      where: { id: quote.id },
+      data: { reminderSentAt: null },
+    });
   }
+
+  if (input.status === "OFFERED_BY_MERCHANT") {
+    const fullQuote = await getQuote(input.shop, input.quoteId);
+    if (fullQuote) {
+      await queueQuoteNotification({
+        shop: input.shop,
+        quote: quoteToEmailContext(fullQuote),
+        templateKey: "offer_sent",
+        idempotencyKey: `${input.shop}:${input.quoteId}:offer_sent:v${fullQuote.offerVersion}`,
+      });
+    }
+  }
+
   return { result, quantityChanges, priceChanges };
 }
 
@@ -462,6 +640,7 @@ export async function addQuoteItem(input: {
   quoteId: string;
   productId?: string;
   variantId?: string;
+  variantTitle?: string;
   title: string;
   imageUrl?: string;
   sku?: string;
@@ -485,6 +664,7 @@ export async function addQuoteItem(input: {
         quoteId: quote.id,
         productId: input.productId,
         variantId: input.variantId,
+        variantTitle: input.variantTitle,
         title: input.title,
         imageUrl: input.imageUrl,
         sku: input.sku,
@@ -529,8 +709,6 @@ export async function runQuoteExpirationJobs(input: {
   quoteId?: string;
   includeReminders?: boolean;
 }) {
-  await ensureQuoteReminderColumns();
-
   const now = new Date();
   const settings = await getQuoteSettings(input.shop);
   const includeReminders = input.includeReminders ?? true;
@@ -551,50 +729,52 @@ export async function runQuoteExpirationJobs(input: {
     },
   });
 
-  if (expiringQuotes.length) {
-    await prisma.$transaction(async (tx) => {
-      await tx.quote.updateMany({
-        where: {
-          id: { in: expiringQuotes.map((quote) => quote.id) },
-          status: "OFFERED_BY_MERCHANT",
-        },
-        data: { status: "EXPIRED" as QuoteStatus },
-      });
+  const expiredQuotes = expiringQuotes.length
+    ? await prisma.$transaction(async (tx) => {
+        const claimed = [];
+        for (const quote of expiringQuotes) {
+          const result = await tx.quote.updateMany({
+            where: { id: quote.id, status: "OFFERED_BY_MERCHANT" },
+            data: { status: "EXPIRED" as QuoteStatus },
+          });
+          if (result.count === 1) claimed.push(quote);
+        }
 
-      await tx.conversationMessage.createMany({
-        data: expiringQuotes.map((quote) => ({
-          quoteId: quote.id,
-          sender: "MANAGER" as MessageSender,
-          senderName: "System",
-          message: "This quote has expired.",
-        })),
-      });
-    });
-  }
-
-  if (!includeReminders || settings.reminderBeforeExpireDays <= 0) {
-    return {
-      expiredCount: expiringQuotes.length,
-      reminderCount: 0,
-    };
-  }
+        if (claimed.length) {
+          await tx.conversationMessage.createMany({
+          data: claimed.map((quote) => ({
+              quoteId: quote.id,
+              sender: "MANAGER" as MessageSender,
+              senderName: "System",
+              message: "This quote has expired.",
+              messageType: "SYSTEM",
+              eventType: "QUOTE_EXPIRED",
+            })),
+          });
+        }
+        return claimed;
+      })
+    : [];
 
   const reminderWindowStart = new Date();
   reminderWindowStart.setDate(
     reminderWindowStart.getDate() + settings.reminderBeforeExpireDays,
   );
 
-  const reminderCandidates = await prisma.$queryRawUnsafe<
+  const reminderCandidates = !includeReminders || settings.reminderBeforeExpireDays <= 0
+    ? []
+    : await prisma.$queryRawUnsafe<
     Array<{
       id: string;
       quoteNumber: string;
       shop: string;
       customerEmail: string | null;
       expiresAt: string | Date | null;
+      offerVersion: number;
     }>
   >(
     `
-      SELECT "id", "quoteNumber", "shop", "customerEmail", "expiresAt"
+      SELECT "id", "quoteNumber", "shop", "customerEmail", "expiresAt", "offerVersion"
       FROM "Quote"
       WHERE "shop" = ?
         ${input.quoteId ? `AND "id" = ?` : ""}
@@ -616,50 +796,39 @@ export async function runQuoteExpirationJobs(input: {
 
   const remindedQuoteIds: string[] = [];
   for (const quote of reminderCandidates) {
-    const sent = await sendQuoteReminderEmail({
+    const fullQuote = await getQuote(input.shop, quote.id);
+    if (!fullQuote) continue;
+    await queueQuoteNotification({
       shop: quote.shop,
-      quoteId: quote.id,
-      quoteNumber: quote.quoteNumber,
-      customerEmail: quote.customerEmail,
-      expiresAt: quote.expiresAt,
+      quote: quoteToEmailContext(fullQuote),
+      templateKey: "quote_reminder",
+      idempotencyKey: `${quote.shop}:${quote.id}:quote_reminder:v${quote.offerVersion}`,
     });
-    if (sent) remindedQuoteIds.push(quote.id);
+    remindedQuoteIds.push(quote.id);
   }
 
   if (remindedQuoteIds.length) {
-    await prisma.$executeRawUnsafe(
-      `
-        UPDATE "Quote"
-        SET "reminderSentAt" = ?
-        WHERE "id" IN (${remindedQuoteIds.map(() => "?").join(", ")})
-      `,
-      now.toISOString(),
-      ...remindedQuoteIds,
-    );
+    await prisma.quote.updateMany({
+      where: { id: { in: remindedQuoteIds } },
+      data: { reminderSentAt: now },
+    });
+  }
+
+  for (const quote of expiredQuotes) {
+    const fullQuote = await getQuote(input.shop, quote.id);
+    if (!fullQuote) continue;
+    await queueQuoteNotification({
+      shop: input.shop,
+      quote: quoteToEmailContext(fullQuote),
+      templateKey: "quote_expired",
+      idempotencyKey: `${input.shop}:${quote.id}:quote_expired:v${fullQuote.offerVersion}`,
+    });
   }
 
   return {
-    expiredCount: expiringQuotes.length,
+    expiredCount: expiredQuotes.length,
     reminderCount: remindedQuoteIds.length,
   };
-}
-
-async function sendQuoteReminderEmail(input: {
-  shop: string;
-  quoteId: string;
-  quoteNumber: string;
-  customerEmail: string | null;
-  expiresAt: string | Date | null;
-}) {
-  if (!input.customerEmail) return false;
-
-  // Production hook: replace this with your email provider/Shopify email flow.
-  // Returning true marks the reminder as queued/sent once, so the scheduler
-  // does not spam the same customer every time it runs.
-  console.info(
-    `[quote-reminder] ${input.shop} ${input.quoteNumber} -> ${input.customerEmail} expires ${input.expiresAt}`,
-  );
-  return true;
 }
 
 export async function runAllQuoteExpirationJobs() {
@@ -695,19 +864,46 @@ export async function markQuoteConverted(input: {
 }) {
   const quote = await prisma.quote.findFirst({
     where: { id: input.quoteId, shop: input.shop },
-    select: { id: true },
+    select: { id: true, status: true, orderId: true },
   });
   if (!quote) throw new Response("Quote not found", { status: 404 });
 
-  return prisma.quote.update({
-    where: { id: quote.id },
+  if (quote.status === "CONVERTED_TO_ORDER" && quote.orderId === input.orderId) {
+    return prisma.quote.findUniqueOrThrow({ where: { id: quote.id } });
+  }
+  assertQuoteStatusTransition(quote.status, "CONVERTED_TO_ORDER");
+
+  const transition = await prisma.quote.updateMany({
+    where: { id: quote.id, status: quote.status, orderId: null },
     data: {
       status: "CONVERTED_TO_ORDER",
       orderId: input.orderId,
       orderName: input.orderName,
       orderInvoiceUrl: input.orderInvoiceUrl,
+      expiresAt: null,
+      reminderSentAt: null,
     },
   });
+  if (transition.count !== 1) {
+    throw new Response("Quote was already converted or changed in another request.", {
+      status: 409,
+    });
+  }
+  const updatedQuote = await prisma.quote.findUniqueOrThrow({
+    where: { id: quote.id },
+  });
+
+  const fullQuote = await getQuote(input.shop, input.quoteId);
+  if (fullQuote) {
+    await queueQuoteNotification({
+      shop: input.shop,
+      quote: quoteToEmailContext(fullQuote),
+      templateKey: "quote_converted",
+      idempotencyKey: `${input.shop}:${input.quoteId}:quote_converted`,
+    });
+  }
+
+  return updatedQuote;
 }
 
 export async function createStorefrontQuote(input: {
@@ -724,8 +920,10 @@ export async function createStorefrontQuote(input: {
   items: Array<{
     productId?: string;
     variantId?: string;
+    variantTitle?: string;
     title: string;
     imageUrl?: string;
+    sku?: string;
     quantity: number;
     unitPrice: number;
     quotePrice: number;
@@ -737,6 +935,7 @@ export async function createStorefrontQuote(input: {
     mimeType?: string;
   }>;
 }) {
+  const initialCustomerMessage = input.note?.trim() ?? "";
   const originalTotal = input.items.reduce(
     (sum, item) => sum + item.unitPrice * item.quantity,
     0,
@@ -748,7 +947,7 @@ export async function createStorefrontQuote(input: {
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      return await prisma.$transaction(async (tx) => {
+      const createdQuote = await prisma.$transaction(async (tx) => {
         const quoteNumber = await reserveNextQuoteNumber(tx, input.shop);
 
         const quote = await tx.quote.create({
@@ -765,7 +964,26 @@ export async function createStorefrontQuote(input: {
             note: input.note,
             originalTotal,
             quoteTotal,
-            items: { create: input.items },
+            messages: initialCustomerMessage
+              ? {
+                  create: {
+                    sender: "CUSTOMER",
+                    senderName:
+                      input.customerName?.trim() ||
+                      input.customerEmail?.trim() ||
+                      "Customer",
+                    message: initialCustomerMessage,
+                    messageType: "USER",
+                  },
+                }
+              : undefined,
+            items: {
+              create: input.items.map((item) => ({
+                ...item,
+                lastOfferedQuantity: item.quantity,
+                lastOfferedQuotePrice: item.quotePrice,
+              })),
+            },
             attachments: input.attachments?.length
               ? { create: input.attachments }
               : undefined,
@@ -783,6 +1001,18 @@ export async function createStorefrontQuote(input: {
 
         return quote;
       });
+
+      const fullQuote = await getQuote(input.shop, createdQuote.id);
+      if (fullQuote) {
+        await queueQuoteNotification({
+          shop: input.shop,
+          quote: quoteToEmailContext(fullQuote),
+          templateKey: "quote_requested",
+          idempotencyKey: `${input.shop}:${createdQuote.id}:quote_requested`,
+        });
+      }
+
+      return createdQuote;
     } catch (error) {
       if (attempt < 4 && isQuoteNumberCollision(error)) continue;
       throw error;
@@ -852,7 +1082,6 @@ export async function listCustomerQuotes(
   customerId: string,
   customerEmail?: string,
 ) {
-  await expireOverdueQuotes(shop);
   const normalizedEmail = customerEmail?.trim();
   const quotes = await prisma.quote.findMany({
     where: {

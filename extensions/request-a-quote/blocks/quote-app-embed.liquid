@@ -40,6 +40,8 @@
   data-customer-address="{{ customer_address | strip | escape }}"
   data-currency="{{ cart.currency.iso_code | default: shop.currency }}"
   data-proxy-path="/apps/request-a-quote"
+  data-account-login-url="{{ routes.account_login_url }}"
+  data-account-logout-url="{{ routes.account_logout_url }}"
   data-button-label="{{ block.settings.button_label | escape }}"
 ></div>
 

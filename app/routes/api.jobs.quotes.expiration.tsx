@@ -1,9 +1,11 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { timingSafeEqual } from "node:crypto";
 
 import {
   runAllQuoteExpirationJobs,
   runQuoteExpirationJobs,
 } from "~/models/quote.server";
+import { processQuoteEmailDeliveries } from "~/models/quote-email.server";
 
 const json = (data: unknown, init?: ResponseInit) =>
   new Response(JSON.stringify(data), {
@@ -18,21 +20,21 @@ const json = (data: unknown, init?: ResponseInit) =>
 function assertJobAuthorized(request: Request) {
   const configuredSecret = process.env.QUOTE_JOB_SECRET;
 
-  if (!configuredSecret && process.env.NODE_ENV === "production") {
+  if (!configuredSecret) {
     throw json(
       { ok: false, error: "QUOTE_JOB_SECRET is not configured." },
       { status: 500 },
     );
   }
 
-  if (!configuredSecret) return;
+  const providedSecret = request.headers.get("x-quote-job-secret") ?? "";
+  const configured = Buffer.from(configuredSecret);
+  const provided = Buffer.from(providedSecret);
+  const authorized =
+    configured.length === provided.length &&
+    timingSafeEqual(configured, provided);
 
-  const url = new URL(request.url);
-  const providedSecret =
-    request.headers.get("x-quote-job-secret") ??
-    url.searchParams.get("secret");
-
-  if (providedSecret !== configuredSecret) {
+  if (!authorized) {
     throw json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 }
@@ -50,13 +52,21 @@ async function runJob(request: Request) {
       quoteId,
       includeReminders: true,
     });
-    return json({ ok: true, shop, ...result });
+    const emailResult = await processQuoteEmailDeliveries();
+    return json({ ok: true, shop, ...result, email: emailResult });
   }
 
   const result = await runAllQuoteExpirationJobs();
-  return json({ ok: true, ...result });
+  const emailResult = await processQuoteEmailDeliveries();
+  return json({ ok: true, ...result, email: emailResult });
 }
 
-export const loader = async ({ request }: LoaderFunctionArgs) => runJob(request);
+export const loader = async (args: LoaderFunctionArgs) => {
+  void args;
+  return json(
+    { ok: false, error: "Method not allowed. Use POST." },
+    { status: 405, headers: { Allow: "POST" } },
+  );
+};
 
 export const action = async ({ request }: ActionFunctionArgs) => runJob(request);

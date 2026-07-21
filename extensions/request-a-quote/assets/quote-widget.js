@@ -47,6 +47,28 @@
   };
   const write = (key, value) =>
     localStorage.setItem(key, JSON.stringify(value));
+  async function fetchMessageWithRetry(input, init) {
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 15000);
+      try {
+        const response = await fetch(input, {
+          ...init,
+          signal: controller.signal,
+        });
+        if (response.status < 500 || attempt === 1) return response;
+        lastError = new Error(`Message server returned HTTP ${response.status}.`);
+      } catch (error) {
+        lastError = error;
+        if (attempt === 1) throw error;
+      } finally {
+        window.clearTimeout(timer);
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+    throw lastError || new Error("Message send failed.");
+  }
   const escapeHtml = (value) =>
     String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -91,6 +113,7 @@
   let isSearchPopupOpen = false;
   let isLanguageOpen = false;
   let selectedSearchProducts = [];
+  let selectedCartSearchProducts = [];
   let selectedAttachments = [];
   let selectedChatAttachments = [];
   let showGuestCustomerForm = false;
@@ -144,13 +167,17 @@
   const addressRules = window.SPRFQ_ADDRESS_RULES || {};
   const chatDrafts = new Map();
   const optimisticChatMessages = new Map();
+  const chatSendQueues = new Map();
   let activeQuoteDetailId = null;
+  let activeQuoteDetail = null;
+  let emailPortalToken = "";
   let quoteDetailRequestSeq = 0;
   let selectedLanguage =
     LANGUAGE_OPTIONS.find((option) => option.code === localStorage.getItem(LANGUAGE_KEY)) ||
     LANGUAGE_OPTIONS[0];
-  const sendingMessageIds = new Set();
+  const sendingMessageCounts = new Map();
   let productSearchTimer;
+  let cartSearchRequestId = 0;
   let popupSearchTimer;
   let contactValidationTimer;
   let contactValidationSeq = 0;
@@ -200,6 +227,8 @@
       customerAddress: root?.dataset.customerAddress || "",
       currency: root?.dataset.currency || "USD",
       proxyPath: root?.dataset.proxyPath || "/apps/request-a-quote",
+      accountLoginUrl: root?.dataset.accountLoginUrl || "/account/login",
+      accountLogoutUrl: root?.dataset.accountLogoutUrl || "/account/logout",
       buttonLabel:
         widgetSettings.widgetButtonText ||
         root?.dataset.buttonLabel ||
@@ -365,6 +394,9 @@
       `sp-rfq-floating--${widgetSettings.widgetOrientation}`,
       `sp-rfq-floating--desktop-${widgetSettings.widgetDesktopPosition}`,
       `sp-rfq-floating--mobile-${widgetSettings.widgetMobilePosition}`,
+      widgetSettings.widgetStyle === "icon" && widgetSettings.widgetIconDataUrl
+        ? "sp-rfq-floating--custom-icon"
+        : "",
       widgetSettings.widgetAnimation !== "none"
         ? `sp-rfq-floating--${widgetSettings.widgetAnimation}`
         : "",
@@ -931,6 +963,7 @@
     isSearchPopupOpen = false;
     isLanguageOpen = false;
     selectedSearchProducts = [];
+    selectedCartSearchProducts = [];
     window.clearTimeout(guestSuccessRedirectTimer);
     window.clearInterval(guestSuccessCountdownTimer);
     guestSuccessRedirectTimer = null;
@@ -1307,6 +1340,10 @@
                   <input data-product-search placeholder="${escapeHtml(t("search"))}" type="search" autocomplete="off">
                 </div>
                 <div class="sp-rfq-product-results" data-product-results></div>
+                <footer class="sp-rfq-search-dialog-footer sp-rfq-inline-search-footer" data-cart-search-footer hidden>
+                  <button class="sp-rfq-dialog-cancel" data-cart-search-cancel type="button">${escapeHtml(t("cancel"))}</button>
+                  <button class="sp-rfq-dialog-confirm" data-cart-search-confirm type="button" disabled>${escapeHtml(t("confirm"))}</button>
+                </footer>
               </div>
             </div>`
           : `
@@ -2029,6 +2066,33 @@
         ? searchBox.nextElementSibling
         : modal.querySelector("[data-product-results]");
       if (!results) return;
+      const cancel = modal.querySelector("[data-cart-search-cancel]");
+      const confirm = modal.querySelector("[data-cart-search-confirm]");
+      const footer = modal.querySelector("[data-cart-search-footer]");
+      let removeOutsideSearchListener = () => {};
+
+      const resetSearch = () => {
+        window.clearTimeout(productSearchTimer);
+        cartSearchRequestId += 1;
+        selectedCartSearchProducts = [];
+        input.value = "";
+        results.innerHTML = "";
+        delete results.dataset.loaded;
+        if (confirm) confirm.disabled = true;
+        if (footer) footer.hidden = true;
+      };
+
+      cancel?.addEventListener("click", () => {
+        resetSearch();
+        removeOutsideSearchListener();
+      });
+      confirm?.addEventListener("click", () => {
+        if (selectedCartSearchProducts.length === 0) return;
+        removeOutsideSearchListener();
+        selectedCartSearchProducts.forEach(addProduct);
+        selectedCartSearchProducts = [];
+        renderCart(modal);
+      });
 
       const runSearch = () => {
         window.clearTimeout(productSearchTimer);
@@ -2044,12 +2108,21 @@
         const handleOutsideSearch = (event) => {
           const target = event.target;
           if (!(target instanceof Node)) return;
-          if (searchBox.contains(target) || results.contains(target)) return;
+          if (
+            searchBox.contains(target) ||
+            results.contains(target) ||
+            footer?.contains(target)
+          ) {
+            return;
+          }
           document.removeEventListener("mousedown", handleOutsideSearch);
           delete modal.dataset.emptySearchOutsideBound;
-          if (cart.length > 0 && document.body.contains(modal)) {
-            renderCart(modal);
-          }
+          resetSearch();
+        };
+        removeOutsideSearchListener = () => {
+          document.removeEventListener("mousedown", handleOutsideSearch);
+          delete modal.dataset.emptySearchOutsideBound;
+          removeOutsideSearchListener = () => {};
         };
         document.addEventListener("mousedown", handleOutsideSearch);
       };
@@ -2068,8 +2141,11 @@
 
   async function searchProducts(query, results, modal) {
     const config = getConfig();
-      results.dataset.loaded = "true";
-      results.innerHTML =
+    const requestId = (cartSearchRequestId += 1);
+    const footer = modal.querySelector("[data-cart-search-footer]");
+    if (footer) footer.hidden = true;
+    results.dataset.loaded = "true";
+    results.innerHTML =
       `<div class="sp-rfq-search-status">${escapeHtml(t("loading"))}</div>`;
 
     try {
@@ -2078,6 +2154,7 @@
       );
       if (!response.ok) throw new Error("Product search failed");
       const products = (await response.json()).products ?? [];
+      if (requestId !== cartSearchRequestId) return;
 
       if (!products.length) {
         results.innerHTML =
@@ -2087,8 +2164,11 @@
 
       results.innerHTML = products
         .map((product, index) => {
-          const selected = cart.some(
+          const alreadyInCart = cart.some(
             (item) => item.key === productSearchKey(product),
+          );
+          const selected = selectedCartSearchProducts.some(
+            (item) => productSearchKey(item) === productSearchKey(product),
           );
 
           return `
@@ -2102,24 +2182,44 @@
                 <strong>${escapeHtml(product.title)}</strong>
               </span>
               <strong class="sp-rfq-result-price">${money(product.unitPrice, config.currency)}</strong>
-              <button class="sp-rfq-result-add ${selected ? "is-selected" : ""}" data-result-index="${index}" type="button">
-                ${selected ? "&#10003;" : escapeHtml(t("add"))}
+              <button class="sp-rfq-result-add ${selected || alreadyInCart ? "is-selected" : ""}" data-result-index="${index}" type="button" ${alreadyInCart ? "disabled" : ""}>
+                ${selected || alreadyInCart ? "&#10003;" : escapeHtml(t("add"))}
               </button>
             </div>`;
         })
         .join("");
+      if (footer) footer.hidden = false;
 
       results.querySelectorAll("[data-result-index]").forEach((button) => {
         button.addEventListener("click", () => {
           const product = products[Number(button.dataset.resultIndex)];
-          addProduct(product);
-          button.classList.add("is-selected");
-          button.textContent = "\u2713";
+          const key = productSearchKey(product);
+          const exists = selectedCartSearchProducts.some(
+            (item) => productSearchKey(item) === key,
+          );
+          selectedCartSearchProducts = exists
+            ? selectedCartSearchProducts.filter(
+                (item) => productSearchKey(item) !== key,
+              )
+            : [...selectedCartSearchProducts, product];
+
+          button.classList.toggle("is-selected", !exists);
+          button.textContent = exists ? t("add") : "\u2713";
+
+          const confirm = modal.querySelector("[data-cart-search-confirm]");
+          if (confirm) {
+            confirm.disabled = selectedCartSearchProducts.length === 0;
+          }
         });
       });
+
+      const confirm = modal.querySelector("[data-cart-search-confirm]");
+      if (confirm) confirm.disabled = selectedCartSearchProducts.length === 0;
     } catch {
+      if (requestId !== cartSearchRequestId) return;
       results.innerHTML =
         `<div class="sp-rfq-search-status">${escapeHtml(t("searchFailed"))}</div>`;
+      if (footer) footer.hidden = true;
     }
   }
 
@@ -2334,14 +2434,22 @@
     }
   }
 
-  function guestLoginUrl(email) {
+  function guestLoginUrl(email, returnUrl = "/account") {
+    const config = getConfig();
     const params = new URLSearchParams({
-      return_url: "/account",
+      return_url: returnUrl,
     });
     if (email) {
       params.set("email", email);
     }
-    return `/account/login?${params.toString()}`;
+    return `${config.accountLoginUrl}?${params.toString()}`;
+  }
+
+  function switchAccountUrl(returnUrl) {
+    const config = getConfig();
+    const loginUrl = guestLoginUrl("", returnUrl);
+    const separator = config.accountLogoutUrl.includes("?") ? "&" : "?";
+    return `${config.accountLogoutUrl}${separator}return_url=${encodeURIComponent(loginUrl)}`;
   }
 
   function redirectGuestToLogin(email) {
@@ -2674,6 +2782,10 @@
   }
 
   const allowedAttachmentExtensions = [".png", ".pdf", ".jpg", ".jpeg", ".doc", ".docx"];
+  const maxChatMessageLength = 5000;
+  const maxChatAttachments = 5;
+  const maxChatFileBytes = 5 * 1024 * 1024;
+  const maxChatTotalFileBytes = 15 * 1024 * 1024;
 
   function isAllowedAttachmentFile(file) {
     const lowerName = file.name.toLowerCase();
@@ -2745,7 +2857,8 @@
     </div>`;
   }
 
-  function isSystemQuoteMessage(message = "") {
+  function isSystemQuoteMessage(message = "", messageType = "") {
+    if (messageType === "SYSTEM") return true;
     return (
       String(message).startsWith("The seller ") ||
       String(message).startsWith("The customer ") ||
@@ -2761,7 +2874,7 @@
           message.sender === "CUSTOMER" ? "is-customer" : ""
         } ${(message.attachments || []).length ? "has-attachments" : ""} ${
           message.optimistic ? "is-optimistic" : ""
-        } ${isSystemQuoteMessage(message.message) ? "is-system" : ""}">
+        } ${isSystemQuoteMessage(message.message, message.messageType) ? "is-system" : ""}">
           ${renderMessageAttachments(message.attachments || [])}
           ${
             message.message
@@ -2784,13 +2897,16 @@
   }
 
   function getDisplayMessagesForQuote(quote, quoteId) {
-    return [
+    const confirmedMessages = [
       ...(quote.messages || []),
       ...readLocalChatAttachments(String(quoteId)),
-      ...(optimisticChatMessages.get(String(quoteId)) || []),
     ]
       .filter((message) => message.message || (message.attachments || []).length)
       .sort((left, right) => new Date(left.createdAt) - new Date(right.createdAt));
+    const optimisticMessages =
+      optimisticChatMessages.get(String(quoteId)) || [];
+
+    return [...confirmedMessages, ...optimisticMessages];
   }
 
   async function refreshQuoteDetailMessages(id) {
@@ -2820,6 +2936,7 @@
         quote = (await response.json()).quote;
       }
       if (!quote || activeQuoteDetailId !== quoteId) return;
+      activeQuoteDetail = quote;
 
       const wasNearBottom =
         chatMessages.scrollHeight -
@@ -3002,6 +3119,22 @@
     }
   }
 
+  function hasPendingChatMessages(quoteId) {
+    return (sendingMessageCounts.get(String(quoteId)) || 0) > 0;
+  }
+
+  function startSendingChatMessage(quoteId) {
+    const key = String(quoteId);
+    sendingMessageCounts.set(key, (sendingMessageCounts.get(key) || 0) + 1);
+  }
+
+  function finishSendingChatMessage(quoteId) {
+    const key = String(quoteId);
+    const next = Math.max(0, (sendingMessageCounts.get(key) || 0) - 1);
+    if (next) sendingMessageCounts.set(key, next);
+    else sendingMessageCounts.delete(key);
+  }
+
   function startQuoteDetailPolling(id) {
     stopQuoteDetailPolling();
     quoteDetailPollTimer = window.setInterval(() => {
@@ -3011,15 +3144,16 @@
       }
       const activeElement = document.activeElement;
       const isTyping = activeElement?.matches?.(".sp-rfq-chat-input") ?? false;
+      const hasDraft = Boolean(chatDrafts.get(String(id))?.trim());
       if (document.hidden) return;
       if (buyerStatusConfirmOpen || document.querySelector(".sp-rfq-confirm-backdrop")) return;
-      if (isTyping) {
+      if (isTyping || hasDraft) {
         refreshQuoteDetailMessages(id);
         return;
       }
       if (
         selectedChatAttachments.length > 0 ||
-        sendingMessageIds.has(String(id))
+        hasPendingChatMessages(id)
       ) {
         return;
       }
@@ -3058,6 +3192,7 @@
         customerId: config.customerId || "",
         customerEmail: config.customerEmail || "",
         customerName: config.customerName || "Customer",
+        portalToken: emailPortalToken,
       }),
     });
     if (!response.ok) {
@@ -3080,14 +3215,17 @@
     const requestedQuoteId = String(id);
     const requestSeq = ++quoteDetailRequestSeq;
     activeQuoteDetailId = requestedQuoteId;
+    activeQuoteDetail = null;
     let quote;
+    let quoteLoadError = "";
+    let quoteAccessDenied = false;
     const previousChatInput = modal?.querySelector("[data-customer-message]");
     const previousChatMessages = modal?.querySelector(".sp-rfq-chat-messages");
     const shouldPreserveDraft = options.preserveDraft !== false;
-    const chatDraft = shouldPreserveDraft
+    let chatDraft = shouldPreserveDraft
       ? readChatDraft(id, previousChatInput)
       : "";
-    const shouldRestoreChatFocus = document.activeElement === previousChatInput;
+    let shouldRestoreChatFocus = document.activeElement === previousChatInput;
     const wasNearBottom = previousChatMessages
       ? previousChatMessages.scrollHeight -
           previousChatMessages.scrollTop -
@@ -3105,6 +3243,9 @@
         if (config.customerEmail) {
           params.set("customerEmail", config.customerEmail);
         }
+        if (emailPortalToken) {
+          params.set("portalToken", emailPortalToken);
+        }
         const query = params.toString();
         const response = await fetch(
           `${config.proxyPath}/quotes/${id}${query ? `?${query}` : ""}`,
@@ -3113,18 +3254,49 @@
           return;
         }
         if (!response.ok) {
+          const errorPayload = await response.json().catch(() => null);
+          quoteAccessDenied = response.status === 403;
+          quoteLoadError =
+            errorPayload?.error ||
+            (response.status === 403
+              ? "This quote belongs to a different customer account."
+              : "This quote could not be opened.");
           quote = null;
         } else {
-        quote = (await response.json()).quote;
+          quote = (await response.json()).quote;
         }
       } catch {
+        quoteLoadError = "This quote could not be opened. Please try again.";
         quote = null;
       }
     }
     if (requestSeq !== quoteDetailRequestSeq || activeQuoteDetailId !== requestedQuoteId) {
       return;
     }
-    if (!quote || !modal) return;
+    if (!modal) return;
+    if (!quote) {
+      stopQuoteDetailPolling();
+      activeQuoteDetailId = null;
+      activeQuoteDetail = null;
+      modal.removeAttribute("data-quote-id");
+      const returnUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const accessAction = quoteAccessDenied
+        ? `<p>Please sign out and sign in using the email address that received this quote.</p>
+            <a class="sp-rfq-button" href="${escapeHtml(switchAccountUrl(returnUrl))}">Sign in with another account</a>`
+        : '<a class="sp-rfq-button" href="/account">View your account</a>';
+      modal.innerHTML =
+        modalHeader("Quote unavailable") +
+        `<div class="sp-rfq-content">
+          <div class="sp-rfq-empty sp-rfq-history-empty">
+            <strong>Access denied</strong>
+            <p>${escapeHtml(quoteLoadError || "This quote is not available for the signed-in account.")}</p>
+            ${accessAction}
+          </div>
+        </div>`;
+      bindShellControls(modal);
+      return;
+    }
+    activeQuoteDetail = quote;
     if (historyCache) {
       historyCache = historyCache.map((item) =>
         item.id === id ? { ...item, unreadCount: 0 } : item,
@@ -3141,7 +3313,6 @@
         ),
     );
 
-    const isSendingMessage = sendingMessageIds.has(String(id));
     const canRespondToQuote = canBuyerRespondToQuote(quote.status);
     const detailActionHtml = canRespondToQuote
       ? `<div class="sp-rfq-detail-actions">
@@ -3167,6 +3338,16 @@
           )}</span>
         </div>`;
     const displayMessages = getDisplayMessagesForQuote(quote, id);
+    const showChangeIndicators =
+      normalizeQuoteStatus(quote.status) === "NEGOTIATING";
+
+    // The request above can take long enough for the buyer to start typing.
+    // Capture the live textarea again immediately before replacing the modal.
+    const latestChatInput = modal.querySelector("[data-customer-message]");
+    if (latestChatInput) {
+      chatDraft = readChatDraft(id, latestChatInput);
+      shouldRestoreChatFocus = document.activeElement === latestChatInput;
+    }
 
     modal.innerHTML =
       modalHeader(
@@ -3206,9 +3387,19 @@
                             </span>
                           </div>
                         </td>
-                        <td>${Number(item.quantity || 1)}</td>
+                        <td>
+                          ${Number(item.quantity || 1)}
+                          ${showChangeIndicators && item.lastOfferedQuantity != null && Number(item.quantity) !== Number(item.lastOfferedQuantity)
+                            ? `<small class="sp-rfq-change-indicator ${Number(item.quantity) > Number(item.lastOfferedQuantity) ? "is-increase" : "is-decrease"}">${Number(item.quantity) > Number(item.lastOfferedQuantity) ? "↑" : "↓"} From ${Number(item.lastOfferedQuantity)}</small>`
+                            : ""}
+                        </td>
                         <td>${money(item.unitPrice, quote.currency)}</td>
-                        <td><strong class="sp-rfq-blue">${money(item.quotePrice, quote.currency)}</strong></td>
+                        <td>
+                          <strong class="sp-rfq-blue">${money(item.quotePrice, quote.currency)}</strong>
+                          ${showChangeIndicators && item.lastOfferedQuotePrice != null && Number(item.quotePrice) !== Number(item.lastOfferedQuotePrice)
+                            ? `<small class="sp-rfq-change-indicator ${Number(item.quotePrice) > Number(item.lastOfferedQuotePrice) ? "is-increase" : "is-decrease"}">${Number(item.quotePrice) > Number(item.lastOfferedQuotePrice) ? "↑" : "↓"} From ${money(item.lastOfferedQuotePrice, quote.currency)}</small>`
+                            : ""}
+                        </td>
                         <td><strong class="sp-rfq-blue">${money(Number(item.quotePrice || 0) * Number(item.quantity || 1), quote.currency)}</strong></td>
                       </tr>`,
                     )
@@ -3223,24 +3414,22 @@
           </section>
           <aside class="sp-rfq-conversation sp-rfq-chat-panel">
             <h3>${escapeHtml(t("conversation"))}</h3>
-            <div class="sp-rfq-chat-start">${escapeHtml(t("replyStart"))}</div>
+            ${
+              normalizeQuoteStatus(quote.status) === "REQUESTED_BY_CUSTOMER"
+                ? `<div class="sp-rfq-chat-start">${escapeHtml(t("replyStart"))}</div>`
+                : ""
+            }
             <div class="sp-rfq-messages sp-rfq-chat-messages">
               ${buildChatMessagesHtml(displayMessages)}
             </div>
             <div class="sp-rfq-composer sp-rfq-chat-composer">
               ${renderChatAttachmentPreviews()}
-              <textarea class="sp-rfq-chat-input" data-customer-message placeholder="${escapeHtml(t("typeMessage"))}" ${
-                isSendingMessage ? "disabled" : ""
-              }></textarea>
-              <button class="sp-rfq-chat-attach" data-chat-attach type="button" aria-label="${escapeHtml(t("attachFormats"))}" ${
-                isSendingMessage ? "disabled" : ""
-              }>${icons.paperclip}</button>
+              <textarea class="sp-rfq-chat-input" data-customer-message maxlength="${maxChatMessageLength}" placeholder="${escapeHtml(t("typeMessage"))}"></textarea>
+              <button class="sp-rfq-chat-attach" data-chat-attach type="button" aria-label="${escapeHtml(t("attachFormats"))}">${icons.paperclip}</button>
               <input class="sp-rfq-chat-file-input" type="file" accept=".png,.pdf,.jpg,.jpeg,.doc,.docx" multiple hidden>
               <button class="sp-rfq-chat-send ${
                 selectedChatAttachments.length ? "has-message" : ""
-              }" data-send-message type="button" aria-label="Send message" ${
-                isSendingMessage ? "disabled" : ""
-              }>↑</button>
+              }" data-send-message type="button" aria-label="Send message">↑</button>
             </div>
           </aside>
         </div>
@@ -3280,19 +3469,14 @@
       .querySelector("[data-send-message]")
       ?.addEventListener("click", async () => {
         const quoteId = String(id);
-        if (sendingMessageIds.has(quoteId)) return;
         const textarea = modal.querySelector("[data-customer-message]");
         const message = textarea.value.trim();
         if (!message && selectedChatAttachments.length === 0) return;
 
         const sendButton = modal.querySelector("[data-send-message]");
-        const attachButton = modal.querySelector("[data-chat-attach]");
-        sendingMessageIds.add(quoteId);
-        sendButton?.setAttribute("disabled", "disabled");
-        attachButton?.setAttribute("disabled", "disabled");
+        startSendingChatMessage(quoteId);
         if (textarea) {
           textarea.value = "";
-          textarea.setAttribute("disabled", "disabled");
         }
         clearChatDraft(quoteId);
         if (sendButton) {
@@ -3306,9 +3490,11 @@
         const attachmentsToSend = selectedChatAttachments.map((attachment) => ({
           ...attachment,
         }));
-        const optimisticMessageId = `optimistic-${Date.now()}`;
+        const clientMessageId = `message-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const optimisticMessageId = `optimistic-${clientMessageId}`;
         const optimisticMessage = {
           id: optimisticMessageId,
+          clientMessageId,
           sender: "CUSTOMER",
           senderName: config.customerName || "Customer",
           message,
@@ -3318,67 +3504,113 @@
         };
         addOptimisticChatMessage(quoteId, optimisticMessage);
         selectedChatAttachments = [];
-        await openQuoteDetail(id, {
-          forceScrollBottom: true,
-          preserveDraft: false,
-        });
+        modal.querySelector(".sp-rfq-chat-attachments")?.remove();
+        const liveChatMessages = modal.querySelector(
+          ".sp-rfq-chat-messages",
+        );
+        if (liveChatMessages) {
+          liveChatMessages.innerHTML = buildChatMessagesHtml(
+            getDisplayMessagesForQuote(activeQuoteDetail || quote, id),
+          );
+          liveChatMessages.scrollTop = liveChatMessages.scrollHeight;
+        }
 
         try {
-          if (quoteId.startsWith("local-")) {
-            const history = read(historyStorageKey(), []);
-            const localQuote = history.find((item) => item.id === id);
-            localQuote.messages ||= [];
-            localQuote.messages.push({
-              id: `message-${Date.now()}`,
-              sender: "CUSTOMER",
-              senderName: config.customerName || "Customer",
-              message,
-              attachments: attachmentsToSend,
-              createdAt: new Date().toISOString(),
-            });
-            write(historyStorageKey(), history);
-          } else {
-            const response = await fetch(`${config.proxyPath}/quotes/${id}/messages`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                customerName: config.customerName || "Customer",
+          const sendToBackend = async () => {
+            if (quoteId.startsWith("local-")) {
+              const history = read(historyStorageKey(), []);
+              const localQuote = history.find((item) => item.id === id);
+              localQuote.messages ||= [];
+              const localMessage = {
+                id: `message-${Date.now()}`,
+                sender: "CUSTOMER",
+                senderName: config.customerName || "Customer",
                 message,
                 attachments: attachmentsToSend,
-              }),
-            });
+                createdAt: new Date().toISOString(),
+              };
+              localQuote.messages.push(localMessage);
+              write(historyStorageKey(), history);
+              return localMessage;
+            }
+
+            const response = await fetchMessageWithRetry(
+              `${config.proxyPath}/quotes/${id}/messages`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  customerName: config.customerName || "Customer",
+                  clientMessageId,
+                  message,
+                  attachments: attachmentsToSend,
+                }),
+              },
+            );
             if (!response.ok) {
               const errorText = await response.text().catch(() => "");
               throw new Error(
                 `HTTP ${response.status}${errorText ? `: ${errorText.slice(0, 180)}` : ""}`,
               );
             }
+            return (await response.json()).message;
+          };
+          const queuedSend = (chatSendQueues.get(quoteId) || Promise.resolve())
+            .catch(() => undefined)
+            .then(sendToBackend);
+          chatSendQueues.set(quoteId, queuedSend);
+          const confirmedMessage = await queuedSend;
+          if (chatSendQueues.get(quoteId) === queuedSend) {
+            chatSendQueues.delete(quoteId);
+          }
+          const currentQuote = activeQuoteDetail || quote;
+          currentQuote.messages ||= [];
+          if (
+            confirmedMessage &&
+            !currentQuote.messages.some(
+              (message) =>
+                message.id === confirmedMessage.id ||
+                (confirmedMessage.clientMessageId &&
+                  message.clientMessageId === confirmedMessage.clientMessageId),
+            )
+          ) {
+            currentQuote.messages.push(confirmedMessage);
           }
           removeOptimisticChatMessage(quoteId, optimisticMessageId);
-          clearChatDraft(quoteId);
-          sendingMessageIds.delete(quoteId);
-          await openQuoteDetail(id, {
-            forceScrollBottom: true,
-            preserveDraft: false,
-          });
+          finishSendingChatMessage(quoteId);
+          if (liveChatMessages?.isConnected) {
+            liveChatMessages.innerHTML = buildChatMessagesHtml(
+              getDisplayMessagesForQuote(currentQuote, id),
+            );
+            liveChatMessages.scrollTop = liveChatMessages.scrollHeight;
+          }
         } catch (error) {
           console.error("[SP RFQ] Could not send message.", error);
           removeOptimisticChatMessage(quoteId, optimisticMessageId);
-          selectedChatAttachments = attachmentsToSend;
-          chatDrafts.set(quoteId, message);
-          sendingMessageIds.delete(quoteId);
-          await openQuoteDetail(id, {
-            forceScrollBottom: false,
-            preserveDraft: true,
-          });
-          if (textarea?.isConnected) {
-            textarea.value = message;
+          selectedChatAttachments = [
+            ...attachmentsToSend,
+            ...selectedChatAttachments,
+          ];
+          const currentDraft = chatDrafts.get(quoteId) || "";
+          chatDrafts.set(
+            quoteId,
+            currentDraft ? `${message}\n${currentDraft}` : message,
+          );
+          finishSendingChatMessage(quoteId);
+          if (liveChatMessages?.isConnected) {
+            liveChatMessages.innerHTML = buildChatMessagesHtml(
+              getDisplayMessagesForQuote(activeQuoteDetail || quote, id),
+            );
+          }
+          const currentInput = modal.querySelector("[data-customer-message]");
+          if (currentInput) {
+            currentInput.value = currentInput.value
+              ? `${message}\n${currentInput.value}`
+              : message;
           }
           showWidgetToast(t("messageSendFailed"), "error");
         } finally {
-          sendingMessageIds.delete(quoteId);
           if (sendButton?.isConnected) {
-            sendButton.removeAttribute("disabled");
             sendButton.innerHTML = "↑";
             sendButton.classList.toggle(
               "has-message",
@@ -3386,15 +3618,31 @@
                 Boolean(textarea?.value?.trim()),
             );
           }
-          if (attachButton?.isConnected) attachButton.removeAttribute("disabled");
-          if (textarea?.isConnected) textarea.removeAttribute("disabled");
         }
       });
 
     bindChatAttachmentPicker(modal);
 
     modal.querySelector("[data-download-pdf]")?.addEventListener("click", () => {
-      window.print();
+      if (String(quote.id || "").startsWith("local-")) {
+        window.print();
+        return;
+      }
+      const config = getConfig();
+      const params = new URLSearchParams();
+      if (config.customerEmail) {
+        params.set("customerEmail", config.customerEmail);
+      }
+      if (emailPortalToken) {
+        params.set("portalToken", emailPortalToken);
+      }
+      const query = params.toString();
+      const link = document.createElement("a");
+      link.href = `${config.proxyPath}/quotes/${encodeURIComponent(quote.id)}/pdf${query ? `?${query}` : ""}`;
+      link.download = `${quote.quoteNumber || "quote"}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
     });
 
     modal.querySelectorAll("[data-buyer-status]").forEach((button) => {
@@ -3485,6 +3733,25 @@
         showWidgetToast(t("chooseValidFiles"), "error");
         return;
       }
+      const combinedFiles = [
+        ...selectedChatAttachments,
+        ...files,
+      ];
+      if (
+        combinedFiles.length > maxChatAttachments ||
+        files.some((file) => file.size <= 0 || file.size > maxChatFileBytes) ||
+        combinedFiles.reduce(
+          (total, file) => total + Number(file.size || 0),
+          0,
+        ) > maxChatTotalFileBytes
+      ) {
+        input.value = "";
+        showWidgetToast(
+          "Attach up to 5 files, 5 MB each and 15 MB total.",
+          "error",
+        );
+        return;
+      }
 
       const nextAttachments = await Promise.all(files.map(fileToAttachment));
       selectedChatAttachments = [
@@ -3516,6 +3783,40 @@
     });
     await loadWidgetSettings();
     createShell();
+    const emailParams = new URLSearchParams(window.location.search);
+    const emailQuoteId = emailParams.get("sp_quote");
+    emailPortalToken = emailParams.get("sp_token") || "";
+    if (emailQuoteId && emailPortalToken) {
+      const config = getConfig();
+      if (!config.customerId) {
+        const returnUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        window.location.replace(guestLoginUrl("", returnUrl));
+        return;
+      }
+      // Create the modal shell before loading a quote from an email deep link.
+      // Email links use GET only to avoid mail security scanners changing quote status.
+      openModal("cart");
+      await openQuoteDetail(emailQuoteId);
+      const requestedAction = emailParams.get("sp_action");
+      const actionSelector =
+        requestedAction === "ACCEPTED"
+          ? '[data-buyer-status="ACCEPTED"]'
+          : requestedAction === "DECLINED"
+            ? '[data-buyer-status="DECLINED"]'
+            : "";
+      const actionButton = actionSelector
+        ? document.querySelector(`.sp-rfq-modal ${actionSelector}`)
+        : null;
+      if (actionButton) {
+        actionButton.classList.add("sp-rfq-email-action-target");
+        actionButton.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        actionButton.focus({ preventScroll: true });
+        window.setTimeout(
+          () => actionButton.classList.remove("sp-rfq-email-action-target"),
+          3000,
+        );
+      }
+    }
     bindAddButtons();
     new MutationObserver(bindAddButtons).observe(document.documentElement, {
       childList: true,

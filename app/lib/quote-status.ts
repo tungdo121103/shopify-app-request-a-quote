@@ -10,6 +10,40 @@ export const quoteStatusLabels = {
 
 export type QuoteStatusValue = keyof typeof quoteStatusLabels;
 
+const allowedQuoteStatusTransitions: Record<
+  QuoteStatusValue,
+  readonly QuoteStatusValue[]
+> = {
+  REQUESTED_BY_CUSTOMER: ["NEGOTIATING"],
+  NEGOTIATING: ["OFFERED_BY_MERCHANT"],
+  OFFERED_BY_MERCHANT: ["NEGOTIATING", "ACCEPTED", "DECLINED", "EXPIRED"],
+  ACCEPTED: ["CONVERTED_TO_ORDER"],
+  DECLINED: ["NEGOTIATING"],
+  EXPIRED: ["NEGOTIATING"],
+  CONVERTED_TO_ORDER: [],
+};
+
+export function canTransitionQuoteStatus(
+  current: QuoteStatusValue,
+  next: QuoteStatusValue,
+) {
+  return (
+    current === next || allowedQuoteStatusTransitions[current].includes(next)
+  );
+}
+
+export function assertQuoteStatusTransition(
+  current: QuoteStatusValue,
+  next: QuoteStatusValue,
+) {
+  if (canTransitionQuoteStatus(current, next)) return;
+
+  throw new Response(
+    `Quote status cannot change from ${getQuoteStatusLabel(current)} to ${getQuoteStatusLabel(next)}.`,
+    { status: 409 },
+  );
+}
+
 export function getQuoteStatusLabel(status: string) {
   return (
     quoteStatusLabels[status as QuoteStatusValue] ??
@@ -32,4 +66,14 @@ export function getQuoteStatusTone(status: string) {
     default:
       return "warning";
   }
+}
+
+export function shouldShowQuoteDueDate(
+  status: string | null | undefined,
+  expiresAt: string | Date | null | undefined,
+) {
+  return Boolean(
+    expiresAt &&
+      (status === "OFFERED_BY_MERCHANT" || status === "EXPIRED"),
+  );
 }

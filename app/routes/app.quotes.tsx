@@ -1,8 +1,7 @@
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import type { LoaderFunctionArgs } from "react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Form,
-  redirect,
   useFetcher,
   useLoaderData,
   useLocation,
@@ -10,19 +9,23 @@ import {
   useNavigation,
 } from "react-router";
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import { getQuoteStatusLabel, getQuoteStatusTone } from "~/lib/quote-status";
+import { QuoteDeleteDialog } from "~/components/quotes/QuoteDeleteDialog";
+import { QuoteListTable } from "~/components/quotes/QuoteListTable";
+import { QuoteListFooter } from "~/components/quotes/QuoteListFooter";
+import {
+  downloadQuotesCsv,
+  type QuoteListItem,
+} from "~/features/quotes/quote-list.client";
+import { handleQuoteListAction } from "~/features/quotes/quote-list-action.server";
 import {
   getQuoteListData,
   type QuoteListData,
 } from "~/models/quote-list.server";
-import {
-  addMessage,
-  deleteQuote,
-  getQuote,
-  updateQuoteStatus,
-} from "~/models/quote.server";
 import { authenticate } from "~/shopify.server";
-import styles from "~/styles/quotes.module.css";
+import pageStyles from "~/styles/quote-list.module.css";
+import sharedStyles from "~/styles/shared.module.css";
+
+const styles = { ...sharedStyles, ...pageStyles };
 
 const statusOptions = [
   { value: "ALL", label: "All" },
@@ -54,82 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return getQuoteListData(session.shop, request);
 };
 
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  const formData = await request.formData();
-  const intent = String(formData.get("intent") ?? "");
-  const quoteId = String(formData.get("quoteId") ?? "");
-  const quoteIds = formData.getAll("quoteIds").map(String).filter(Boolean);
-
-  if (intent === "delete" && quoteId) {
-    await deleteQuote(session.shop, quoteId);
-    return { ok: true };
-  }
-
-  if (intent === "reopen" && quoteId) {
-    const quote = await getQuote(session.shop, quoteId);
-    if (quote && (quote.status === "DECLINED" || String(quote.status) === "EXPIRED")) {
-      await updateQuoteStatus(session.shop, quoteId, "NEGOTIATING");
-      await addMessage({
-        quoteId,
-        shop: session.shop,
-        sender: "MANAGER",
-        senderName: "Manager",
-        message:
-          "The seller reopened this quote. You can continue the negotiation.",
-      });
-      return { ok: true, quoteId, status: "NEGOTIATING" };
-    }
-    return { ok: false, error: "This quote cannot be reopened." };
-  }
-
-  if (intent === "revise" && quoteId) {
-    const quote = await getQuote(session.shop, quoteId);
-    if (quote?.status === "OFFERED_BY_MERCHANT") {
-      await updateQuoteStatus(session.shop, quoteId, "NEGOTIATING");
-      await addMessage({
-        quoteId,
-        shop: session.shop,
-        sender: "MANAGER",
-        senderName: "Manager",
-        message:
-          "The seller is revising this offer. You will be able to accept or decline after a new quote is sent.",
-      });
-      return { ok: true, quoteId, status: "NEGOTIATING" };
-    }
-    return { ok: false, error: "This quote cannot be revised." };
-  }
-
-  if (intent === "bulk-delete" && quoteIds.length) {
-    await Promise.all(quoteIds.map((id) => deleteQuote(session.shop, id)));
-    return { ok: true };
-  }
-
-  return redirect("/app/quotes");
-};
-
-const money = (value: string | number, currency: string) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value));
-
-const dateTime = (value: string | Date) =>
-  new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(value));
-
-const escapeCsvCell = (value: unknown) => {
-  const text = String(value ?? "");
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-};
+export const action = handleQuoteListAction;
 
 type QuoteQueryParams = {
   search: string;
@@ -140,14 +68,10 @@ type QuoteQueryParams = {
 };
 
 async function fetchQuotesData(params: QuoteQueryParams) {
-  const searchParams = new URLSearchParams();
-  if (params.search) searchParams.set("search", params.search);
-  if (params.status !== "ALL") searchParams.set("status", params.status);
-  if (params.sort !== DEFAULT_SORT) searchParams.set("sort", params.sort);
-  searchParams.set("page", String(params.page));
-  searchParams.set("pageSize", String(params.pageSize));
-
-  const response = await fetch(`/app/quotes/data?${searchParams.toString()}`, {
+  const dataUrl = buildQuotesDataUrl(params);
+  const response = await fetch(dataUrl, {
+    cache: "no-store",
+    credentials: "same-origin",
     headers: { Accept: "application/json" },
   });
 
@@ -156,6 +80,17 @@ async function fetchQuotesData(params: QuoteQueryParams) {
   }
 
   return (await response.json()) as QuoteListData;
+}
+
+function buildQuotesDataUrl(params: QuoteQueryParams) {
+  const searchParams = new URLSearchParams();
+  if (params.search) searchParams.set("search", params.search);
+  if (params.status !== "ALL") searchParams.set("status", params.status);
+  if (params.sort !== DEFAULT_SORT) searchParams.set("sort", params.sort);
+  searchParams.set("page", String(params.page));
+  searchParams.set("pageSize", String(params.pageSize));
+
+  return `/app/quotes/data?${searchParams.toString()}`;
 }
 
 const icons = {
@@ -252,6 +187,14 @@ export default function QuotesPage() {
     quoteId?: string;
     status?: string;
   }>();
+  const liveQuotesFetcher = useFetcher<QuoteListData>();
+  const expirationJobFetcher = useFetcher<{
+    ok?: boolean;
+    expiredCount?: number;
+    reminderCount?: number;
+  }>();
+  const expirationJobStartedRef = useRef(false);
+  const expirationResultHandledRef = useRef(false);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sortPopoverRef = useRef<HTMLDetailsElement>(null);
   const [draftSearch, setDraftSearch] = useState(initialData.search);
@@ -295,11 +238,6 @@ export default function QuotesPage() {
           ? initialData
           : undefined,
       placeholderData: (previousData) => previousData,
-      refetchInterval: () =>
-        typeof document !== "undefined" &&
-        document.visibilityState === "visible"
-          ? 3000
-          : false,
     },
     queryClient,
   );
@@ -329,11 +267,79 @@ export default function QuotesPage() {
   const visibleQuotes = quotes.filter(
     (quote) => !optimisticDeletedIds.includes(quote.id),
   );
-  const visibleQuoteIds = visibleQuotes.map((quote) => quote.id);
+  const visibleQuoteIds = useMemo(
+    () => visibleQuotes.map((quote) => quote.id),
+    [visibleQuotes],
+  );
   const selectedQuotes = visibleQuotes.filter((quote) =>
     selectedQuoteIds.includes(quote.id),
   );
   const selectedFirstQuote = selectedQuotes[0];
+
+  useEffect(() => {
+    if (!liveQuotesFetcher.data) return;
+    queryClient.setQueryData(
+      [
+        "admin-quotes",
+        queryParams.search,
+        queryParams.status,
+        queryParams.sort,
+        queryParams.page,
+        queryParams.pageSize,
+      ],
+      liveQuotesFetcher.data,
+    );
+  }, [
+    liveQuotesFetcher.data,
+    queryClient,
+    queryParams.page,
+    queryParams.pageSize,
+    queryParams.search,
+    queryParams.sort,
+    queryParams.status,
+  ]);
+
+  useEffect(() => {
+    const refreshQuotes = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        liveQuotesFetcher.state !== "idle"
+      ) {
+        return;
+      }
+      liveQuotesFetcher.load(buildQuotesDataUrl(queryParams));
+    };
+
+    const timer = window.setInterval(refreshQuotes, 3000);
+    return () => window.clearInterval(timer);
+  }, [liveQuotesFetcher, queryParams]);
+
+  useEffect(() => {
+    if (expirationJobStartedRef.current) return;
+    expirationJobStartedRef.current = true;
+    expirationJobFetcher.load("/app/quotes/expiration-job/data");
+  }, [expirationJobFetcher]);
+
+  useEffect(() => {
+    if (
+      expirationResultHandledRef.current ||
+      expirationJobFetcher.state !== "idle" ||
+      !expirationJobFetcher.data
+    ) {
+      return;
+    }
+    expirationResultHandledRef.current = true;
+    if (
+      Number(expirationJobFetcher.data.expiredCount || 0) > 0 ||
+      Number(expirationJobFetcher.data.reminderCount || 0) > 0
+    ) {
+      void quotesQuery.refetch();
+    }
+  }, [
+    expirationJobFetcher.data,
+    expirationJobFetcher.state,
+    quotesQuery,
+  ]);
 
   useEffect(() => {
     if (
@@ -448,7 +454,7 @@ export default function QuotesPage() {
     setSelectedQuoteIds((current) =>
       current.filter((id) => visibleQuoteIds.includes(id)),
     );
-  }, [visibleQuoteIds.join("|")]);
+  }, [visibleQuoteIds]);
 
   const toggleQuoteSelection = (quoteId: string) => {
     setSelectedQuoteIds((current) =>
@@ -462,46 +468,11 @@ export default function QuotesPage() {
     setSelectedQuoteIds(allVisibleQuotesSelected ? [] : visibleQuoteIds);
   };
 
-  const exportQuotes = (quotesToExport: typeof quotes) => {
-    if (quotesToExport.length === 0 || typeof window === "undefined") return;
-
-    const rows = [
-      [
-        "Quote ID",
-        "Customer",
-        "Created time",
-        "Expired time",
-        "Status",
-        "Quote value",
-      ],
-      ...quotesToExport.map((quote) => [
-        quote.quoteNumber,
-        quote.customerEmail ?? quote.customerName ?? "Guest customer",
-        dateTime(quote.createdAt),
-        quote.expiresAt ? dateTime(quote.expiresAt) : "-",
-        getQuoteStatusLabel(quote.status),
-        money(quote.quoteTotal.toString(), quote.currency),
-      ]),
-    ];
-    const csv = rows
-      .map((row) => row.map((cell) => escapeCsvCell(cell)).join(","))
-      .join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `quotes-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
-  };
-
   const exportSelectedQuotes = () => {
-    exportQuotes(selectedQuotes);
+    downloadQuotesCsv(selectedQuotes as QuoteListItem[]);
   };
 
-  const requestDeleteQuote = (quote: (typeof quotes)[number]) => {
+  const requestDeleteQuote = (quote: QuoteListItem) => {
     setDeleteConfirm({
       ids: [quote.id],
       label: quote.quoteNumber,
@@ -547,8 +518,6 @@ export default function QuotesPage() {
 
   const page = pagination.page;
   const totalPages = pagination.totalPages;
-  const canGoPrevious = page > 1;
-  const canGoNext = page < totalPages;
   const updateQuery = (nextParams: Partial<QuoteQueryParams>) => {
     setQueryParams((current) => ({ ...current, ...nextParams }));
   };
@@ -767,308 +736,32 @@ export default function QuotesPage() {
             </div>
           </Form>
         )}
-
-        <div className={styles.managerTableWrap}>
-          <table className={styles.managerTable}>
-            <thead>
-              <tr>
-                <th className={styles.checkboxColumn}>
-                  <input
-                    aria-label="Select all quotes"
-                    checked={allVisibleQuotesSelected}
-                    disabled={visibleQuoteIds.length === 0}
-                    onChange={toggleAllVisibleQuotes}
-                    type="checkbox"
-                  />
-                </th>
-                <th>Quote ID</th>
-                <th>Customer</th>
-                <th>Created time</th>
-                <th>Expired time</th>
-                <th>Status</th>
-                <th>Quote value</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleQuotes.length === 0 ? (
-                <tr>
-                  <td className={styles.managerEmpty} colSpan={8}>
-                    No quotes found
-                  </td>
-                </tr>
-              ) : (
-                visibleQuotes.map((quote) => {
-                  const tone = getQuoteStatusTone(quote.status);
-                  const isFinal =
-                    quote.status === "ACCEPTED" ||
-                    quote.status === "CONVERTED_TO_ORDER";
-                  const isSent = quote.status === "OFFERED_BY_MERCHANT";
-                  const isWorkable = quote.status === "NEGOTIATING";
-                  const isDeclined = quote.status === "DECLINED";
-                  const isExpired = String(quote.status) === "EXPIRED";
-                  const isRequested =
-                    quote.status === "REQUESTED_BY_CUSTOMER";
-                  const canView = isFinal || isDeclined || isExpired || isSent;
-                  const canManage = isRequested || isWorkable;
-                  const canDownload = isFinal || isWorkable || isSent;
-                  const canRevise = isSent;
-                  const canReopen = isDeclined || isExpired;
-                  const canDelete = !isFinal;
-                  const isRowSubmitting =
-                    isSubmitting || pendingActionQuoteId === quote.id;
-
-                  return (
-                    <tr
-                      className={
-                        quote.unreadCount > 0 ? styles.managerUnreadRow : ""
-                      }
-                      key={quote.id}
-                    >
-                      <td className={styles.checkboxColumn}>
-                        <input
-                          checked={selectedQuoteIds.includes(quote.id)}
-                          onChange={() => toggleQuoteSelection(quote.id)}
-                          aria-label={`Select ${quote.quoteNumber}`}
-                          type="checkbox"
-                        />
-                      </td>
-                      <td>
-                        <button
-                          className={styles.managerQuoteLink}
-                          onClick={() => openQuote(quote.id, { mode: "view" })}
-                          type="button"
-                        >
-                          {quote.unreadCount > 0 ? (
-                            <span
-                              aria-label="Unread updates"
-                              className={styles.managerUnreadDot}
-                            />
-                          ) : null}
-                          {quote.quoteNumber}
-                        </button>
-                      </td>
-                      <td>
-                        <div className={styles.customerCell}>
-                          <span className={styles.managerTextValue}>
-                            {quote.customerEmail ??
-                              "Guest customer"}
-                          </span>
-                        </div>
-                      </td>
-                      <td className={styles.managerTime}>
-                        {dateTime(quote.createdAt)}
-                      </td>
-                      <td className={styles.managerTime}>
-                        {quote.expiresAt ? dateTime(quote.expiresAt) : "-"}
-                      </td>
-                      <td>
-                        <span
-                          className={`${styles.managerBadge} ${styles[tone]}`}
-                        >
-                          {getQuoteStatusLabel(quote.status)}
-                        </span>
-                      </td>
-                      <td className={styles.managerMoney}>
-                        {money(quote.quoteTotal.toString(), quote.currency)}
-                      </td>
-                      <td>
-                        <div className={styles.managerActions}>
-                          {canView ? (
-                            <button
-                              aria-label={`View ${quote.quoteNumber}`}
-                              className={styles.managerAction}
-                              onClick={() => openQuote(quote.id, { mode: "view" })}
-                              title="View details"
-                              type="button"
-                            >
-                              {icons.view}
-                            </button>
-                          ) : null}
-                          {canManage ? (
-                            <button
-                              aria-label={`Manage ${quote.quoteNumber}`}
-                              className={styles.managerAction}
-                              onClick={() => openQuote(quote.id, { mode: "edit" })}
-                              title="Manage quote"
-                              type="button"
-                            >
-                              {icons.edit}
-                            </button>
-                          ) : null}
-                          {canRevise ? (
-                            <button
-                              aria-label={`Revise ${quote.quoteNumber}`}
-                              className={`${styles.managerAction} ${
-                                pendingActionQuoteId === quote.id
-                                  ? styles.managerActionPending
-                                  : ""
-                              }`}
-                              disabled={isRowSubmitting}
-                              onClick={() => submitQuoteAction(quote.id, "revise")}
-                              title="Revise quote"
-                              type="button"
-                            >
-                              {pendingActionQuoteId === quote.id ? (
-                                <span className={styles.managerActionSpinner} />
-                              ) : (
-                                icons.edit
-                              )}
-                            </button>
-                          ) : null}
-                          {canReopen ? (
-                            <button
-                              aria-label={`Reopen ${quote.quoteNumber}`}
-                              className={`${styles.managerAction} ${
-                                pendingActionQuoteId === quote.id
-                                  ? styles.managerActionPending
-                                  : ""
-                              }`}
-                              disabled={isRowSubmitting}
-                              onClick={() => submitQuoteAction(quote.id, "reopen")}
-                              title="Reopen quote"
-                              type="button"
-                            >
-                              {pendingActionQuoteId === quote.id ? (
-                                <span className={styles.managerActionSpinner} />
-                              ) : (
-                                icons.reopen
-                              )}
-                            </button>
-                          ) : null}
-                          {canDownload ? (
-                            <button
-                              aria-label={`Download ${quote.quoteNumber}`}
-                              className={styles.managerAction}
-                              onClick={() => downloadQuotePdf(quote.id)}
-                              title="Download quote PDF"
-                              type="button"
-                            >
-                              {icons.download}
-                            </button>
-                          ) : null}
-                          {canDelete ? (
-                            <button
-                              aria-label={`Delete ${quote.quoteNumber}`}
-                              className={`${styles.managerAction} ${styles.managerDelete} ${
-                                pendingActionQuoteId === quote.id
-                                  ? styles.managerActionPending
-                                  : ""
-                              }`}
-                              disabled={isRowSubmitting}
-                              onClick={() => requestDeleteQuote(quote)}
-                              title="Delete"
-                              type="button"
-                            >
-                              {pendingActionQuoteId === quote.id ? (
-                                <span className={styles.managerActionSpinner} />
-                              ) : (
-                                icons.delete
-                              )}
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <footer className={styles.managerFooter}>
-          <div className={styles.managerPager}>
-            <button
-              aria-label="Previous page"
-              className={`${styles.managerPagerButton} ${
-                !canGoPrevious ? styles.managerPagerButtonDisabled : ""
-              }`}
-              disabled={!canGoPrevious}
-              onClick={() => updateQuery({ page: page - 1 })}
-              type="button"
-            >
-              {icons.chevronLeft}
-            </button>
-            <span>
-              Page{" "}
-              <strong>
-                {page}/{totalPages}
-              </strong>
-            </span>
-            <button
-              aria-label="Next page"
-              className={`${styles.managerPagerButton} ${
-                !canGoNext ? styles.managerPagerButtonDisabled : ""
-              }`}
-              disabled={!canGoNext}
-              onClick={() => updateQuery({ page: page + 1 })}
-              type="button"
-            >
-              {icons.chevronRight}
-            </button>
-          </div>
-          <div className={styles.managerPerPage}>
-            <span>Items per page</span>
-            <select
-              aria-label="Items per page"
-              value={pagination.pageSize}
-              name="pageSize"
-              onChange={(event) =>
-                updateQuery({
-                  page: 1,
-                  pageSize: Number(event.currentTarget.value),
-                })
-              }
-            >
-              <option value="10">10</option>
-              <option value="20">20</option>
-              <option value="30">30</option>
-              <option value="50">50</option>
-            </select>
-          </div>
-        </footer>
+        <QuoteListTable
+          allSelected={allVisibleQuotesSelected}
+          isSubmitting={isSubmitting}
+          onDeleteQuote={requestDeleteQuote}
+          onDownloadPdf={downloadQuotePdf}
+          onOpenQuote={openQuote}
+          onQuoteAction={submitQuoteAction}
+          onToggleAll={toggleAllVisibleQuotes}
+          onToggleQuote={toggleQuoteSelection}
+          pendingActionQuoteId={pendingActionQuoteId}
+          quotes={visibleQuotes}
+          selectedQuoteIds={selectedQuoteIds}
+        />
+        <QuoteListFooter
+          onChange={updateQuery}
+          page={page}
+          pageSize={pagination.pageSize}
+          totalPages={totalPages}
+        />
       </section>
       {deleteConfirm ? (
-        <div
-          className={styles.managerConfirmOverlay}
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setDeleteConfirm(null);
-            }
-          }}
-          role="presentation"
-        >
-          <div
-            aria-labelledby="delete-quote-title"
-            aria-modal="true"
-            className={styles.managerConfirmDialog}
-            role="dialog"
-          >
-            <h2 id="delete-quote-title">Delete quote?</h2>
-            <p>
-              Are you sure you want to delete{" "}
-              <strong>{deleteConfirm.label}</strong>? This action cannot be
-              undone.
-            </p>
-            <div className={styles.managerConfirmActions}>
-              <button
-                className={styles.managerConfirmCancel}
-                onClick={() => setDeleteConfirm(null)}
-                type="button"
-              >
-                Cancel
-              </button>
-              <button
-                className={styles.managerConfirmDelete}
-                onClick={confirmDeleteQuotes}
-                type="button"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <QuoteDeleteDialog
+          label={deleteConfirm.label}
+          onCancel={() => setDeleteConfirm(null)}
+          onConfirm={confirmDeleteQuotes}
+        />
       ) : null}
     </main>
   );

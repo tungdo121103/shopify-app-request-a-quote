@@ -14,21 +14,21 @@ datasource db {
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
@@ -49,65 +49,101 @@ enum MessageSender {
 }
 
 model Quote {
-  id            String        @id @default(cuid())
-  quoteNumber   String
-  shop          String
-  customerId    String?
-  customerName  String?
-  customerEmail String?
-  customerPhone String?
+  id              String                @id @default(cuid())
+  quoteNumber     String
+  shop            String
+  customerId      String?
+  customerName    String?
+  customerEmail   String?
+  customerPhone   String?
   customerCountry String?
-  customerRegion String?
+  customerRegion  String?
   customerAddress String?
-  currency      String        @default("USD")
-  status        QuoteStatus   @default(REQUESTED_BY_CUSTOMER)
-  note          String?
-  originalTotal Decimal       @default(0)
-  quoteTotal    Decimal       @default(0)
-  expiresAt     DateTime?
-  reminderSentAt DateTime?
-  orderId       String?
-  orderName     String?
+  currency        String                @default("USD")
+  status          QuoteStatus           @default(REQUESTED_BY_CUSTOMER)
+  note            String?
+  originalTotal   Decimal               @default(0)
+  quoteTotal      Decimal               @default(0)
+  expiresAt       DateTime?
+  reminderSentAt  DateTime?
+  orderId         String?
+  orderName       String?
   orderInvoiceUrl String?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  items         QuoteItem[]
-  messages      ConversationMessage[]
-  attachments   QuoteAttachment[]
+  offerVersion    Int                   @default(0)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  items           QuoteItem[]
+  messages        ConversationMessage[]
+  attachments     QuoteAttachment[]
+  emailDeliveries QuoteEmailDelivery[]
 
+  @@unique([shop, quoteNumber])
   @@index([shop, status])
   @@index([shop, customerId])
-  @@unique([shop, quoteNumber])
+}
+
+model QuoteEmailDelivery {
+  id                String    @id @default(cuid())
+  shop              String
+  quoteId           String
+  event             String
+  recipientEmail    String
+  idempotencyKey    String    @unique
+  payloadJson       String
+  status            String    @default("PENDING")
+  attemptCount      Int       @default(0)
+  nextAttemptAt     DateTime  @default(now())
+  providerMessageId String?
+  lastError         String?
+  processingAt      DateTime?
+  sentAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @default(now()) @updatedAt
+  quote             Quote     @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([shop, quoteId])
 }
 
 model QuoteItem {
-  id              String   @id @default(cuid())
-  quoteId         String
-  productId       String?
-  variantId       String?
-  title           String
-  imageUrl        String?
-  sku             String?
-  quantity        Int      @default(1)
-  unitPrice       Decimal
-  quotePrice      Decimal
-  inventoryStatus String?
-  quote           Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  id                    String   @id @default(cuid())
+  quoteId               String
+  productId             String?
+  variantId             String?
+  variantTitle          String?
+  title                 String
+  imageUrl              String?
+  sku                   String?
+  quantity              Int      @default(1)
+  unitPrice             Decimal
+  quotePrice            Decimal
+  lastOfferedQuantity   Int?
+  lastOfferedQuotePrice Decimal?
+  inventoryStatus       String?
+  quote                 Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
 
   @@index([quoteId])
 }
 
 model ConversationMessage {
-  id          String            @id @default(cuid())
-  quoteId     String
-  sender      MessageSender
-  senderName  String?
-  message     String
-  createdAt   DateTime          @default(now())
-  quote       Quote             @relation(fields: [quoteId], references: [id], onDelete: Cascade)
-  attachments QuoteAttachment[]
+  id              String            @id @default(cuid())
+  quoteId         String
+  clientMessageId String?
+  sourceIpHash    String?
+  sourceActorHash String?
+  sender          MessageSender
+  senderName      String?
+  message         String
+  messageType     String            @default("USER")
+  eventType       String?
+  createdAt       DateTime          @default(now())
+  quote           Quote             @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  attachments     QuoteAttachment[]
 
+  @@unique([quoteId, sender, clientMessageId])
   @@index([quoteId, createdAt])
+  @@index([sourceIpHash, createdAt])
+  @@index([sourceActorHash, createdAt])
 }
 
 model QuoteAttachment {
@@ -126,35 +162,71 @@ model QuoteAttachment {
 }
 
 model QuoteSetting {
-  id                         String   @id @default(cuid())
-  shop                       String   @unique
-  requesterScope             String   @default("SELECTED")
-  allowCustomersNoPurchase   Boolean  @default(true)
-  allowRepeatCustomers       Boolean  @default(false)
-  allowAbandonedCheckout     Boolean  @default(false)
-  allowEmailSubscribers      Boolean  @default(false)
-  allowPurchasedCustomers    Boolean  @default(false)
-  selectedCustomerQuery      String?
-  emailPatterns              String?
-  productEligibility         String   @default("ALL")
-  selectedProductResources   String?
-  allowedProductResources    String?
-  excludedProductResources   String?
-  quoteExpiresAfterDays      Int      @default(7)
-  reminderBeforeExpireDays   Int      @default(3)
-  widgetStyle                String   @default("text")
-  widgetButtonText           String   @default("Get Quote")
-  widgetSize                 String   @default("medium")
-  widgetOrientation          String   @default("horizontal")
-  widgetDesktopPosition      String   @default("middle_left")
-  widgetMobilePosition       String   @default("bottom_right")
-  widgetDisplayMode          String   @default("all")
-  widgetSpecificPages        String?
-  widgetBackgroundColor      String   @default("#120670")
-  widgetTextColor            String   @default("#ffffff")
-  widgetAnimation            String   @default("pulse")
-  createdAt                  DateTime @default(now())
-  updatedAt                  DateTime @updatedAt
+  id                       String   @id @default(cuid())
+  shop                     String   @unique
+  requesterScope           String   @default("SELECTED")
+  allowCustomersNoPurchase Boolean  @default(true)
+  allowRepeatCustomers     Boolean  @default(false)
+  allowAbandonedCheckout   Boolean  @default(false)
+  allowEmailSubscribers    Boolean  @default(false)
+  allowPurchasedCustomers  Boolean  @default(false)
+  selectedCustomerQuery    String?
+  emailPatterns            String?
+  productEligibility       String   @default("ALL")
+  selectedProductResources String?
+  allowedProductResources  String?
+  excludedProductResources String?
+  quoteExpiresAfterDays    Int      @default(7)
+  reminderBeforeExpireDays Int      @default(3)
+  widgetStyle              String   @default("text")
+  widgetButtonText         String   @default("Get Quote")
+  widgetSize               String   @default("medium")
+  widgetOrientation        String   @default("horizontal")
+  widgetDesktopPosition    String   @default("middle_left")
+  widgetMobilePosition     String   @default("bottom_right")
+  widgetDisplayMode        String   @default("all")
+  widgetSpecificPages      String?
+  widgetBackgroundColor    String   @default("#120670")
+  widgetTextColor          String   @default("#ffffff")
+  widgetAnimation          String   @default("pulse")
+  widgetIconDataUrl        String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+}
+
+model QuotePdfSetting {
+  shop         String   @id
+  settingsJson String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+}
+
+model QuoteReadState {
+  id         String   @id
+  shop       String
+  quoteId    String
+  viewer     String
+  viewerId   String   @default("")
+  lastReadAt DateTime
+  updatedAt  DateTime @updatedAt
+
+  @@unique([quoteId, viewer, viewerId])
+  @@index([shop, viewer])
+  @@index([shop, quoteId])
+}
+
+model PrivacyRequest {
+  id            String   @id
+  shop          String
+  topic         String
+  customerId    String?
+  customerEmail String?
+  payloadJson   String
+  status        String   @default("READY")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@index([shop, createdAt])
 }
 
 model ShopCounter {
@@ -167,4 +239,19 @@ model ShopCounter {
 
   @@unique([shop, key])
   @@index([shop])
+}
+
+model QuoteEmailBranding {
+  id           String   @id
+  shop         String   @unique
+  senderName   String   @default("")
+  logoUrl      String   @default("")
+  primaryColor String   @default("#152f7c")
+  linkColor    String   @default("#1769aa")
+  signature    String   @default("Customer service team")
+  replyToEmail String   @default("")
+  footerText   String   @default("")
+  theme        String   @default("clean")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
 }

@@ -4,7 +4,7 @@ import type {
 } from "react-router";
 import { Buffer } from "node:buffer";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Form,
   useActionData,
@@ -17,7 +17,10 @@ import {
   updateWidgetSettings,
 } from "~/models/quote-setting.server";
 import { authenticate } from "~/shopify.server";
-import styles from "~/styles/quotes.module.css";
+import pageStyles from "~/styles/widget-admin.module.css";
+import sharedStyles from "~/styles/shared.module.css";
+
+const styles = { ...sharedStyles, ...pageStyles };
 
 type PositionKey =
   | "top_left"
@@ -102,6 +105,7 @@ export default function WidgetPage() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const formRef = useRef<HTMLFormElement>(null);
   const [toastVisible, setToastVisible] = useState(false);
   const [widgetStyle, setWidgetStyle] = useState(settings.widgetStyle);
   const [buttonText, setButtonText] = useState(settings.widgetButtonText);
@@ -166,6 +170,7 @@ export default function WidgetPage() {
       )}
 
       <Form
+        ref={formRef}
         className={styles.widgetLayout}
         encType="multipart/form-data"
         method="post"
@@ -183,6 +188,7 @@ export default function WidgetPage() {
               }`}
             >
               <input
+                aria-label="Circle and icon widget style"
                 checked={widgetStyle === "icon"}
                 name="widgetStyle"
                 onChange={() => setWidgetStyle("icon")}
@@ -200,6 +206,7 @@ export default function WidgetPage() {
               }`}
             >
               <input
+                aria-label="Rectangle and text widget style"
                 checked={widgetStyle === "text"}
                 name="widgetStyle"
                 onChange={() => setWidgetStyle("text")}
@@ -268,7 +275,13 @@ export default function WidgetPage() {
                 <small>PNG, JPG, GIF, WEBP, or SVG. Max 1MB.</small>
               </div>
               <div className={styles.widgetIconUploadControls}>
-                <div className={styles.widgetIconPreview}>
+                <div
+                  className={`${styles.widgetIconPreview} ${
+                    iconDataUrl && !removeIcon
+                      ? styles.widgetIconPreviewCustom
+                      : ""
+                  }`}
+                >
                   {iconDataUrl && !removeIcon ? (
                     <img alt="" src={iconDataUrl} />
                   ) : (
@@ -445,6 +458,10 @@ export default function WidgetPage() {
               } ${styles[`widgetSize_${size}`]} ${
                 widgetStyle === "icon" ? styles.widgetPreviewButtonIcon : ""
               } ${
+                widgetStyle === "icon" && iconDataUrl && !removeIcon
+                  ? styles.widgetPreviewButtonCustomIcon
+                  : ""
+              } ${
                 orientation === "vertical" && widgetStyle === "text"
                   ? styles.widgetPreviewButtonVertical
                   : ""
@@ -470,13 +487,15 @@ export default function WidgetPage() {
         </aside>
 
         <div className={styles.widgetActions}>
-          <button
-            className={styles.primaryButton}
+          <s-button
+            variant="primary"
+            type="button"
+            loading={isSubmitting}
             disabled={isSubmitting}
-            type="submit"
+            onClick={() => formRef.current?.requestSubmit()}
           >
-            {isSubmitting ? "Saving..." : "Save widget"}
-          </button>
+            Save widget
+          </s-button>
         </div>
       </Form>
     </main>
@@ -520,6 +539,7 @@ function PositionPicker({
         {positions.map((position) => (
           <label key={position}>
             <input
+              aria-label={`${label}: ${position.replaceAll("_", " ")}`}
               checked={value === position}
               name={name}
               onChange={() => onChange(position)}
