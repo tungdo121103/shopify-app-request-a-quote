@@ -10,7 +10,7 @@ vi.mock("~/models/quote.server", () => ({
   runAllQuoteExpirationJobs: mocks.runAllQuoteExpirationJobs,
   runQuoteExpirationJobs: mocks.runQuoteExpirationJobs,
 }));
-vi.mock("~/models/quote-email.server", () => ({
+vi.mock("~/features/email/quote-email.server", () => ({
   processQuoteEmailDeliveries: mocks.processQuoteEmailDeliveries,
 }));
 

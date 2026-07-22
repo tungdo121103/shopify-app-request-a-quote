@@ -1,10 +1,10 @@
 import { getQuoteStatusLabel, getQuoteStatusTone } from "~/lib/quote-status";
 import type { ReactNode } from "react";
-import type { QuoteListItem } from "~/features/quotes/quote-list.client";
+import type { QuoteListItem } from "~/features/quotes/quote-list";
 import {
   formatQuoteDateTime,
   formatQuoteMoney,
-} from "~/features/quotes/quote-list.client";
+} from "~/features/quotes/quote-list";
 import pageStyles from "~/styles/quote-list.module.css";
 import sharedStyles from "~/styles/shared.module.css";
 

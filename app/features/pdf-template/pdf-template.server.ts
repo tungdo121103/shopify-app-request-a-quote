@@ -4,7 +4,7 @@ import {
   updateQuotePdfSetting,
   type QuotePdfSetting,
 } from "~/models/quote-pdf-setting.server";
-import { getEmailBranding } from "~/models/quote-email.server";
+import { getEmailBranding } from "~/features/email/quote-email.server";
 import { getLatestQuote } from "~/models/quote.server";
 import { authenticate } from "~/shopify.server";
 

@@ -1,9 +1,13 @@
 import type {
   getEmailPreviewItems,
   QuoteEmailBranding,
-} from "~/models/quote-email.server";
+} from "~/features/email/quote-email.server";
 import type { QuoteEmailTemplateKey } from "~/models/quote-email.shared";
 import type { QuoteEmailContent, QuoteEmailDisplay } from "~/models/quote-email-config.shared";
+import {
+  createPreviewExpiry,
+  formatQuoteEmailExpiry,
+} from "~/features/email/rendering/quote-email-expiry";
 
 
 export function renderStructuredPreview(content: QuoteEmailContent, display: QuoteEmailDisplay, key: QuoteEmailTemplateKey, branding: QuoteEmailBranding, previewItems: Awaited<ReturnType<typeof getEmailPreviewItems>>) {
@@ -24,7 +28,22 @@ export function renderStructuredPreview(content: QuoteEmailContent, display: Quo
   const isQuoteReminder = key === "quote_reminder";
   const isQuoteExpired = key === "quote_expired";
   const isQuoteConverted = key === "quote_converted";
+  const isQuoteReopened = key === "quote_reopened";
   const isActionableQuote = isOfferSent || isQuoteReminder;
+  const expiry = display.showExpiry
+    ? formatQuoteEmailExpiry(createPreviewExpiry())
+    : null;
+  const showExpiry = expiry !== null;
+  const expiryValue = expiry
+    ? isQuoteReminder
+      ? `<strong>${expiry.statusText}</strong><br><span style="color:#6d7175;font-size:12px">${expiry.dateText}</span>`
+      : `<strong>${expiry.dateText}</strong><br><span style="color:#6d7175;font-size:12px">${expiry.statusText}</span>`
+    : "";
+  const expiryPlainText = expiry
+    ? isQuoteReminder
+      ? `${expiry.statusText} — ${expiry.dateText}`
+      : `${expiry.dateText} — ${expiry.statusText}`
+    : "";
   const hasCurrentQuoteValue = quoteTotal > 0;
   const quoteValueLabel = isOfferSent
     ? "Total Quote Value"
@@ -53,8 +72,8 @@ export function renderStructuredPreview(content: QuoteEmailContent, display: Quo
       : branded
       ? isQuoteAccepted
           ? `<div style="margin:14px 0;border:1px solid #d9e1e8;border-radius:9px;overflow:hidden"><div style="padding:8px;text-align:center;font-weight:700;background:linear-gradient(90deg,#a8a5ff,#57dfb1)">Quote Summary</div><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:15px;text-align:center"><span>Quote ID<br><strong>RFQ-99999</strong></span><span>Accepted Quote Value<br><strong>${quoteTotalText}</strong></span></div></div>`
-        : `<div style="margin:14px 0;border:1px solid #d9e1e8;border-radius:9px;overflow:hidden"><div style="padding:8px;text-align:center;font-weight:700;background:linear-gradient(90deg,#a8a5ff,#57dfb1)">Quote Summary</div><div style="display:grid;grid-template-columns:repeat(${display.showExpiry ? 3 : 2},1fr);gap:8px;padding:15px;text-align:center"><span>Quote ID<br><strong>RFQ-99999</strong></span><span>${quoteValueLabel}<br><strong>${quoteTotalText}</strong></span>${display.showExpiry ? "<span>Expiry<br><strong>18/07/2026</strong></span>" : ""}</div></div>`
-      : `<div style="margin:14px 0"><strong>Quote Summary:</strong><br>Quote ID: RFQ-99999<br>${quoteValueLabel}: ${quoteTotalText}${display.showExpiry ? "<br>Expires in 7 day(s), on 18/07/2026 07:21" : ""}</div>`
+        : `<div style="margin:14px 0;border:1px solid #d9e1e8;border-radius:9px;overflow:hidden"><div style="padding:8px;text-align:center;font-weight:700;background:linear-gradient(90deg,#a8a5ff,#57dfb1)">Quote Summary</div><div style="display:grid;grid-template-columns:repeat(${showExpiry ? 3 : 2},1fr);gap:8px;padding:15px;text-align:center"><span>Quote ID<br><strong>RFQ-99999</strong></span><span>${quoteValueLabel}<br><strong>${quoteTotalText}</strong></span>${showExpiry ? `<span>Expiry<br>${expiryValue}</span>` : ""}</div></div>`
+      : `<div style="margin:14px 0"><strong>Quote Summary:</strong><br>Quote ID: RFQ-99999<br>${quoteValueLabel}: ${quoteTotalText}${showExpiry ? `<br>Expiry: ${expiryPlainText}` : ""}</div>`
     : "";
   const items = display.showItems ? renderPreviewItems(display, previewProducts, branded, originalTotalText, quoteTotalText, true) : "";
   const brand = branding.logoUrl
@@ -65,12 +84,12 @@ export function renderStructuredPreview(content: QuoteEmailContent, display: Quo
       ? `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:18px 0"><a href="#" style="padding:13px 8px;border:1px solid #b7c0ca;border-radius:10px;background:#f7f8fa;color:#303030;text-align:center;text-decoration:none;font-weight:700">${text(content.primaryButtonLabel)}</a><a href="#" style="padding:13px 8px;border:1px solid #7186d8;border-radius:10px;background:#e4e9ff;color:#203c96;text-align:center;text-decoration:none;font-weight:700">${text(content.acceptButtonLabel)}</a><a href="#" style="padding:13px 8px;border:1px solid #d98799;border-radius:10px;background:#ffe4ea;color:#a52e4b;text-align:center;text-decoration:none;font-weight:700">${text(content.declineButtonLabel)}</a></div>`
       : `<div style="margin:10px 0 18px">🔍 <a href="#" style="color:${linkColor};font-weight:700;text-decoration:underline">${text(content.primaryButtonLabel)}</a><span style="color:#b5b5b5"> &nbsp;|&nbsp; </span>✅ <a href="#" style="color:${linkColor};font-weight:700;text-decoration:underline">${text(content.acceptButtonLabel)}</a><span style="color:#b5b5b5"> &nbsp;|&nbsp; </span>❌ <a href="#" style="color:${linkColor};font-weight:700;text-decoration:underline">${text(content.declineButtonLabel)}</a></div>`
     : "";
-  const viewQuoteAction = (!branded && !isActionableQuote) || key === "quote_requested" || isNegotiationStarted || isQuoteAccepted || isQuoteDeclined || isQuoteExpired || isQuoteConverted
+  const viewQuoteAction = (!branded && !isActionableQuote) || key === "quote_requested" || isNegotiationStarted || isQuoteAccepted || isQuoteDeclined || isQuoteExpired || isQuoteConverted || isQuoteReopened
     ? branded
       ? `<div style="margin:18px 0;text-align:center"><a href="#" style="display:inline-block;min-width:190px;padding:12px 24px;border:1px solid #b7c0ca;border-radius:8px;background:#f7f8fa;color:#303030;text-align:center;text-decoration:none;font-weight:700">${text(content.primaryButtonLabel)}</a></div>`
       : `<div style="margin:12px 0 18px">🔍 <a href="#" style="color:${linkColor};font-weight:700;text-decoration:underline">${text(content.primaryButtonLabel)}</a></div>`
     : "";
-  const heading = isActionableQuote || key === "quote_requested" || isNegotiationStarted || isQuoteAccepted || isQuoteDeclined || isQuoteExpired || isQuoteConverted ? "" : `<h2>${text(content.heading)}</h2>`;
+  const heading = isActionableQuote || key === "quote_requested" || isNegotiationStarted || isQuoteAccepted || isQuoteDeclined || isQuoteExpired || isQuoteConverted || isQuoteReopened ? "" : `<h2>${text(content.heading)}</h2>`;
   const itemsHeading = display.showItems ? `<p><strong>List items:</strong></p>` : "";
   const actionPrompt = isActionableQuote
     ? `<p>${isQuoteReminder ? "Please review your quote and choose an option before it expires." : "Please review your quote and choose an option:"}</p>`
@@ -135,7 +154,10 @@ export function renderPreview(html: string) {
     .replace(/{{\s*quoteNumber\s*}}/g, "RFQ-99999")
     .replace(/{{\s*quoteTotal\s*}}/g, "$154.92")
     .replace(/{{\s*currency\s*}}/g, "USD")
-    .replace(/{{\s*expiresAt\s*}}/g, "Jul 18, 2026")
+    .replace(
+      /{{\s*expiresAt\s*}}/g,
+      formatQuoteEmailExpiry(createPreviewExpiry())?.dateText ?? "",
+    )
     .replace(/{{\s*quoteUrl\s*}}/g, "#")
     .replace(/{{\s*acceptUrl\s*}}/g, "#")
     .replace(/{{\s*declineUrl\s*}}/g, "#")
@@ -226,5 +248,12 @@ export const emailTemplateMeta: Record<
     description: "Confirms that the accepted quote was converted to a Shopify Draft Order.",
     trigger: "After conversion",
     placeholders: [...commonPlaceholders, "orderName", "invoiceUrl", "orderUrl"],
+  },
+  quote_reopened: {
+    step: "9",
+    short: "Quote reopened",
+    description: "Lets the buyer know that a declined or expired quote is open for discussion again.",
+    trigger: "Merchant reopens",
+    placeholders: commonPlaceholders,
   },
 };

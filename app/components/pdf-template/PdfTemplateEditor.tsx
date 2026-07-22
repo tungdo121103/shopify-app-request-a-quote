@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { formatPreviewDate } from "~/features/pdf-template/pdf-template.client";
+import { formatPreviewDate } from "~/features/pdf-template/pdf-template";
 import type { QuotePdfSetting } from "~/models/quote-pdf-setting.server";
 import pageStyles from "~/styles/pdf.module.css";
 

@@ -6,7 +6,7 @@ import {
   formatCustomerAddress,
   formatPreviewDate,
   formatPreviewMoney,
-} from "~/features/pdf-template/pdf-template.client";
+} from "~/features/pdf-template/pdf-template";
 import pageStyles from "~/styles/pdf.module.css";
 
 const styles = pageStyles;

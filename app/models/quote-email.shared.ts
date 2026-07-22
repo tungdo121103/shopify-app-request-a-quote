@@ -7,6 +7,7 @@ export const emailTemplateKeys = [
   "quote_reminder",
   "quote_expired",
   "quote_converted",
+  "quote_reopened",
 ] as const;
 
 export type QuoteEmailTemplateKey = (typeof emailTemplateKeys)[number];
@@ -20,6 +21,7 @@ export const emailTemplateLabels: Record<QuoteEmailTemplateKey, string> = {
   quote_reminder: "Quote reminder",
   quote_expired: "Quote expired",
   quote_converted: "Quote converted",
+  quote_reopened: "Quote reopened",
 };
 
 export const defaultEmailSubjects: Record<QuoteEmailTemplateKey, string> = {
@@ -31,6 +33,7 @@ export const defaultEmailSubjects: Record<QuoteEmailTemplateKey, string> = {
   quote_reminder: "Reminder: Quote {{quoteNumber}} expires soon",
   quote_expired: "Quote {{quoteNumber}} has expired",
   quote_converted: "Quote {{quoteNumber}} has been converted to an order",
+  quote_reopened: "Quote {{quoteNumber}} has been reopened",
 };
 
 export const defaultEmailPreheaders: Record<QuoteEmailTemplateKey, string> = {
@@ -42,4 +45,5 @@ export const defaultEmailPreheaders: Record<QuoteEmailTemplateKey, string> = {
   quote_reminder: "Your quote will expire soon.",
   quote_expired: "This quote can no longer be accepted.",
   quote_converted: "Your order is ready to review.",
+  quote_reopened: "The merchant reopened your quote for further discussion.",
 };

@@ -3,7 +3,7 @@ import {
   requestActorHash,
   requestIpHash,
 } from "~/lib/request-identity.server";
-import { readMessageAttachments } from "~/lib/quote-message-upload.server";
+import { readMessageAttachments } from "~/features/quotes/conversation/quote-message-upload.server";
 import { addMessage } from "~/models/quote.server";
 import { authenticate } from "~/shopify.server";
 

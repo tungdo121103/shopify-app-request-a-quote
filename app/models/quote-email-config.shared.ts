@@ -43,6 +43,7 @@ export const defaultEmailContent = (key: QuoteEmailTemplateKey): QuoteEmailConte
     quote_reminder: "Your quote expires soon",
     quote_expired: "Your quote has expired",
     quote_converted: "Your order is ready",
+    quote_reopened: "Your quote has been reopened",
   } as Record<QuoteEmailTemplateKey, string>)[key],
   greeting: "Hi {{customerName}},",
   intro: ({
@@ -54,10 +55,11 @@ export const defaultEmailContent = (key: QuoteEmailTemplateKey): QuoteEmailConte
     quote_reminder: "Your quote is still awaiting your decision and will expire soon.",
     quote_expired: "This quote has expired and can no longer be accepted or declined.",
     quote_converted: "Your accepted quote from {{shopName}} has been converted to an order.",
+    quote_reopened: "The merchant has reopened quote {{quoteNumber}}. You can review it and continue the conversation.",
   } as Record<QuoteEmailTemplateKey, string>)[key],
-  closing: key === "quote_requested" || key === "negotiation_started" ? "Thank you for working with us." : "Thank you,",
+  closing: key === "quote_requested" || key === "negotiation_started" || key === "quote_reopened" ? "Thank you for working with us." : "Thank you,",
   signature: "Customer service team",
-  primaryButtonLabel: key === "quote_converted" ? "View order" : key === "quote_requested" ? "View quote request" : key === "quote_accepted" ? "View quote status" : key === "quote_declined" || key === "quote_expired" ? "View quote details" : "View quote",
+  primaryButtonLabel: key === "quote_converted" ? "View order" : key === "quote_requested" ? "View quote request" : key === "quote_reopened" ? "View reopened quote" : key === "quote_accepted" ? "View quote status" : key === "quote_declined" || key === "quote_expired" ? "View quote details" : "View quote",
   acceptButtonLabel: "Accept quote",
   declineButtonLabel: "Decline quote",
 });

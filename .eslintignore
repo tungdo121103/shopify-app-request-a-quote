@@ -3,3 +3,6 @@ build
 public/build
 */*.yml
 .shopify
+# Widget source files are concatenation fragments that intentionally share one scope.
+# Lint the generated asset instead of parsing each fragment as a standalone module.
+extensions/request-a-quote/src/widget/

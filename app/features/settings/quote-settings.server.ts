@@ -3,8 +3,9 @@ import {
   getQuoteSettings,
   normalizeSettingsForm,
   updateQuoteSettings,
-  validateExpirationSettingsForm,
 } from "~/models/quote-setting.server";
+import { validateExpirationSettingsForm } from "~/features/settings/quote-expiration-validation";
+import type { QuoteSettings } from "~/models/quote-setting.types";
 import { authenticate } from "~/shopify.server";
 
 export async function loadQuoteSettings({ request }: LoaderFunctionArgs) {
@@ -96,4 +97,4 @@ export async function saveQuoteSettings({ request }: ActionFunctionArgs) {
   };
 }
 
-export type QuoteSettings = Awaited<ReturnType<typeof getQuoteSettings>>;
+export type { QuoteSettings };

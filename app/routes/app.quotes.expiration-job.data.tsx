@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 
 import { runQuoteExpirationJobs } from "~/models/quote.server";
-import { processQuoteEmailDeliveries } from "~/models/quote-email.server";
+import { processQuoteEmailDeliveries } from "~/features/email/quote-email.server";
 import { authenticate } from "~/shopify.server";
 
 const json = (data: unknown, init?: ResponseInit) =>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PDFDocument } from "pdf-lib";
-import { createQuotePdf } from "./quote-pdf.server";
+import { createQuotePdf } from "~/features/pdf/quote-pdf.server";
 import { defaultQuotePdfSetting } from "~/models/quote-pdf-setting.server";
 
 describe("createQuotePdf", () => {

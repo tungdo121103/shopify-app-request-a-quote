@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { validateExpirationSettingsForm } from "./quote-setting.server";
+import { validateExpirationSettingsForm } from "~/features/settings/quote-expiration-validation";
 
 function expirationForm(expiresAfter: string, reminderBefore: string) {
   const formData = new FormData();

@@ -21,7 +21,7 @@ vi.mock("~/db.server", () => ({ default: mocks.prisma }));
 vi.mock("~/models/quote-setting.server", () => ({
   getQuoteSettings: mocks.getQuoteSettings,
 }));
-vi.mock("~/models/quote-email.server", () => ({
+vi.mock("~/features/email/quote-email.server", () => ({
   queueQuoteNotification: mocks.queueQuoteNotification,
 }));
 
@@ -87,6 +87,27 @@ describe("quote model status transitions", () => {
     await updateQuoteStatus("test.myshopify.com", "quote-1", "ACCEPTED");
 
     expect(mocks.prisma.quote.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("queues email 9 when a declined quote is reopened", async () => {
+    mocks.prisma.quote.findFirst
+      .mockResolvedValueOnce({ id: "quote-1", status: "DECLINED" })
+      .mockResolvedValueOnce({ ...fullQuote, status: "NEGOTIATING" });
+    mocks.prisma.quote.updateMany.mockResolvedValue({ count: 1 });
+    mocks.prisma.quote.findUniqueOrThrow.mockResolvedValue({
+      id: "quote-1",
+      status: "NEGOTIATING",
+    });
+
+    await updateQuoteStatus("test.myshopify.com", "quote-1", "NEGOTIATING");
+
+    expect(mocks.queueQuoteNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateKey: "quote_reopened",
+        idempotencyKey:
+          "test.myshopify.com:quote-1:quote_reopened:v2",
+      }),
+    );
   });
 
   it("returns conflict when another request wins the status race", async () => {

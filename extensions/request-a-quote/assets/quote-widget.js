@@ -1,4 +1,5 @@
 ﻿(() => {
+  // Source entry. Run `npm run build:widget` to update the Shopify asset.
   if (window.__spRequestQuoteLoaded) return;
   window.__spRequestQuoteLoaded = true;
 
@@ -171,6 +172,12 @@
   let activeQuoteDetailId = null;
   let activeQuoteDetail = null;
   let emailPortalToken = "";
+  let emailPortalQuoteId = "";
+  function portalTokenForQuote(quoteId) {
+    return String(quoteId || "") === emailPortalQuoteId
+      ? emailPortalToken
+      : "";
+  }
   let quoteDetailRequestSeq = 0;
   let selectedLanguage =
     LANGUAGE_OPTIONS.find((option) => option.code === localStorage.getItem(LANGUAGE_KEY)) ||
@@ -197,16 +204,16 @@
   let floatingSuccessTimer = null;
   let widgetSettings = {
     widgetStyle: "text",
-    widgetButtonText: "",
+    widgetButtonText: "Get Quote",
     widgetSize: "medium",
     widgetOrientation: "horizontal",
     widgetDesktopPosition: "middle_left",
     widgetMobilePosition: "bottom_right",
     widgetDisplayMode: "all",
     widgetSpecificPages: "",
-    widgetBackgroundColor: "#032b7a",
+    widgetBackgroundColor: "#120670",
     widgetTextColor: "#ffffff",
-    widgetAnimation: "none",
+    widgetAnimation: "pulse",
     widgetIconDataUrl: "",
   };
   const productEligibilityCache = new Map();
@@ -315,71 +322,12 @@
       });
       if (!response.ok) throw new Error("Could not load widget settings");
       const data = await response.json();
-      widgetSettings = normalizeWidgetSettings(data.settings);
+      widgetSettings = { ...widgetSettings, ...data.settings };
     } catch (error) {
       console.warn("[SP RFQ] Could not load widget settings.", error);
-      widgetSettings = normalizeWidgetSettings({});
+      // Keep the local bootstrap fallback. The server owns validation and
+      // normalization, so the storefront does not maintain a second rule set.
     }
-  }
-
-  function normalizeWidgetSettings(settings) {
-    const allowed = {
-      widgetStyle: ["icon", "text"],
-      widgetSize: ["small", "medium", "large"],
-      widgetOrientation: ["horizontal", "vertical"],
-      widgetDesktopPosition: [
-        "top_left",
-        "top_center",
-        "top_right",
-        "middle_left",
-        "middle_center",
-        "middle_right",
-        "bottom_left",
-        "bottom_center",
-        "bottom_right",
-      ],
-      widgetMobilePosition: [
-        "top_left",
-        "top_center",
-        "top_right",
-        "middle_left",
-        "middle_center",
-        "middle_right",
-        "bottom_left",
-        "bottom_center",
-        "bottom_right",
-      ],
-      widgetDisplayMode: ["all", "specific"],
-      widgetAnimation: ["none", "pulse", "bounce"],
-    };
-
-    const pick = (key, fallback) =>
-      allowed[key].includes(String(settings?.[key] || "")) ? settings[key] : fallback;
-    const color = (value, fallback) =>
-      /^#[0-9a-f]{6}$/i.test(String(value || "")) ? String(value) : fallback;
-
-    return {
-      widgetStyle: pick("widgetStyle", "text"),
-      widgetButtonText:
-        String(settings?.widgetButtonText || root?.dataset.buttonLabel || "Get Quote")
-          .trim()
-          .slice(0, 30) || "Get Quote",
-      widgetSize: pick("widgetSize", "medium"),
-      widgetOrientation: pick("widgetOrientation", "horizontal"),
-      widgetDesktopPosition: pick("widgetDesktopPosition", "middle_left"),
-      widgetMobilePosition: pick("widgetMobilePosition", "bottom_right"),
-      widgetDisplayMode: pick("widgetDisplayMode", "all"),
-      widgetSpecificPages: String(settings?.widgetSpecificPages || ""),
-      widgetBackgroundColor: color(settings?.widgetBackgroundColor, "#032b7a"),
-      widgetTextColor: color(settings?.widgetTextColor, "#ffffff"),
-      widgetAnimation: pick("widgetAnimation", "none"),
-      widgetIconDataUrl:
-        /^data:image\/(?:png|jpe?g|gif|webp|svg\+xml);base64,[a-z0-9+/=]+$/i.test(
-          String(settings?.widgetIconDataUrl || ""),
-        )
-          ? String(settings.widgetIconDataUrl)
-          : "",
-    };
   }
 
   function applyWidgetSettingsToFloatingButton(button) {
@@ -918,7 +866,6 @@
   // ---------------------------------------------------------------------------
   // Modal shell, header controls, tooltips, and product search dialog shell
   // ---------------------------------------------------------------------------
-
   function createShell() {
     if (!root || document.querySelector(".sp-rfq-floating")) return;
     const button = document.createElement("button");
@@ -3192,7 +3139,7 @@
         customerId: config.customerId || "",
         customerEmail: config.customerEmail || "",
         customerName: config.customerName || "Customer",
-        portalToken: emailPortalToken,
+        portalToken: portalTokenForQuote(id),
       }),
     });
     if (!response.ok) {
@@ -3243,8 +3190,9 @@
         if (config.customerEmail) {
           params.set("customerEmail", config.customerEmail);
         }
-        if (emailPortalToken) {
-          params.set("portalToken", emailPortalToken);
+        const portalToken = portalTokenForQuote(id);
+        if (portalToken) {
+          params.set("portalToken", portalToken);
         }
         const query = params.toString();
         const response = await fetch(
@@ -3633,8 +3581,9 @@
       if (config.customerEmail) {
         params.set("customerEmail", config.customerEmail);
       }
-      if (emailPortalToken) {
-        params.set("portalToken", emailPortalToken);
+      const portalToken = portalTokenForQuote(quote.id);
+      if (portalToken) {
+        params.set("portalToken", portalToken);
       }
       const query = params.toString();
       const link = document.createElement("a");
@@ -3786,6 +3735,7 @@
     const emailParams = new URLSearchParams(window.location.search);
     const emailQuoteId = emailParams.get("sp_quote");
     emailPortalToken = emailParams.get("sp_token") || "";
+    emailPortalQuoteId = emailPortalToken ? String(emailQuoteId || "") : "";
     if (emailQuoteId && emailPortalToken) {
       const config = getConfig();
       if (!config.customerId) {

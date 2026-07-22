@@ -8,8 +8,14 @@ import {
 } from "pdf-lib";
 import type { QuotePdfSetting } from "~/models/quote-pdf-setting.server";
 import { shouldShowQuoteDueDate } from "~/lib/quote-status";
+import {
+  formatPdfDate as formatDate,
+  formatPdfMoney as money,
+  pdfColor as color,
+  uniquePdfAddress as uniqueAddress,
+} from "~/features/pdf/quote-pdf-format";
 
-type PdfQuote = {
+export type PdfQuote = {
   quoteNumber: string;
   status?: string | null;
   customerName?: string | null;
@@ -43,56 +49,6 @@ const PAGE_HEIGHT = 841.89;
 const MARGIN = 42;
 const FIRST_PAGE_ITEMS = 7;
 const CONTINUATION_ITEMS = 13;
-
-function money(value: number, currency: string) {
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: currency || "USD",
-    }).format(Number(value || 0));
-  } catch {
-    return `${Number(value || 0).toFixed(2)} ${currency || "USD"}`;
-  }
-}
-
-function formatDate(
-  value: string | Date | null | undefined,
-  format: QuotePdfSetting["dateFormat"],
-) {
-  if (!value) return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "-";
-  const year = String(parsed.getUTCFullYear());
-  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(parsed.getUTCDate()).padStart(2, "0");
-  if (format === "MM/DD/YYYY") return `${month}/${day}/${year}`;
-  if (format === "YYYY-MM-DD") return `${year}-${month}-${day}`;
-  return `${day}/${month}/${year}`;
-}
-
-function color(hex: string, fallback: string) {
-  const value = /^#[0-9a-f]{6}$/i.test(hex) ? hex : fallback;
-  return rgb(
-    Number.parseInt(value.slice(1, 3), 16) / 255,
-    Number.parseInt(value.slice(3, 5), 16) / 255,
-    Number.parseInt(value.slice(5, 7), 16) / 255,
-  );
-}
-
-function uniqueAddress(...values: Array<string | null | undefined>) {
-  const seen = new Set<string>();
-  return values
-    .flatMap((value) => String(value ?? "").split(","))
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .filter((value) => {
-      const key = value.toLocaleLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .join(", ");
-}
 
 function pdfSafeText(text: string) {
   return String(text ?? "")

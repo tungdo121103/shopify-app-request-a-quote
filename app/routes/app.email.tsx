@@ -12,7 +12,7 @@ import {
   emailTemplateMeta,
   renderPreview,
   renderStructuredPreview,
-} from "~/features/email-template/email-preview.client";
+} from "~/features/email-template/email-preview";
 import {
   emailTemplateKeys,
   emailTemplateLabels,
@@ -20,7 +20,7 @@ import {
   defaultEmailSubjects,
   type QuoteEmailTemplateKey,
 } from "~/models/quote-email.shared";
-import type { QuoteEmailBranding } from "~/models/quote-email.server";
+import type { QuoteEmailBranding } from "~/features/email/quote-email.server";
 import {
   defaultEmailContent,
   defaultEmailDisplay,

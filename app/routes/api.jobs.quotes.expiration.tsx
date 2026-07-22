@@ -5,7 +5,7 @@ import {
   runAllQuoteExpirationJobs,
   runQuoteExpirationJobs,
 } from "~/models/quote.server";
-import { processQuoteEmailDeliveries } from "~/models/quote-email.server";
+import { processQuoteEmailDeliveries } from "~/features/email/quote-email.server";
 
 const json = (data: unknown, init?: ResponseInit) =>
   new Response(JSON.stringify(data), {
